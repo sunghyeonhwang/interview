@@ -1,26 +1,267 @@
 @import "tailwindcss";
 
+/* Pretendard·Noto Sans KR은 layout.tsx의 <link>로 로드 (Tailwind 최적화가 @import를 제거하는 문제 회피) */
+@font-face {
+  font-family: "BMHANNAAir";
+  src: url("https://fastly.jsdelivr.net/gh/projectnoonnu/noonfonts_four@1.2/BMHANNAAir.woff") format("woff");
+  font-display: swap;
+}
+
+/* ── 테마 토큰 ─────────────────────────────
+   기본: 다크. <html data-theme="light">로 라이트 전환. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --surface-base: #0a0c02;
+  --surface-muted: #12140a;
+  --text-primary: #ffffff;
+  --text-secondary: #bcbcbc;  /* 서브 설명 */
+  --key: #3325d4;             /* 키컬러 — 버튼 등 */
+  --key-hover: #4335f2;
+  --key-on: #ffffff;          /* 키컬러 위 텍스트 */
+  --accent: #a99eff;          /* 키컬러의 밝은 변형 — 포커스·선택 표시 (다크 배경 위 3:1 대비) */
+  --danger: #ff9d9d;
+  --border-soft: rgba(255, 255, 255, 0.13);
+  --border-strong: rgba(255, 255, 255, 0.3);
+  --chrome-line: rgba(255, 255, 255, 0.08);
+  --field-bg: rgba(0, 0, 0, 0.28);
+  --field-bg-focus: rgba(0, 0, 0, 0.42);
+  --row-hover: rgba(255, 255, 255, 0.04);
+  --choice-checked-bg: rgba(51, 37, 212, 0.22);
+  --badge-warn-fg: #ffd682;
+  --badge-warn-bg: rgba(255, 214, 130, 0.14);
+  --badge-ok-fg: #85f0be;
+  --badge-ok-bg: rgba(133, 240, 190, 0.14);
+  --badge-mute-fg: rgba(255, 255, 255, 0.65);
+  --badge-mute-bg: rgba(255, 255, 255, 0.1);
+  --dur-instant: 200ms;
+  --dur-fast: 300ms;
+}
+
+:root[data-theme="light"] {
+  --surface-base: #ffffff;
+  --surface-muted: #f6f6f2;
+  --text-primary: #141414;
+  --text-secondary: #6d6d6d;
+  --key: #3325d4;
+  --key-hover: #2a1eb8;
+  --key-on: #ffffff;
+  --accent: #3325d4;          /* 라이트 배경에서는 키컬러 자체가 액센트로 충분한 대비 */
+  --danger: #c22525;
+  --border-soft: rgba(0, 0, 0, 0.12);
+  --border-strong: rgba(0, 0, 0, 0.3);
+  --chrome-line: rgba(0, 0, 0, 0.08);
+  --field-bg: rgba(0, 0, 0, 0.035);
+  --field-bg-focus: rgba(0, 0, 0, 0.06);
+  --row-hover: rgba(0, 0, 0, 0.035);
+  --choice-checked-bg: rgba(51, 37, 212, 0.08);
+  --badge-warn-fg: #8a6100;
+  --badge-warn-bg: rgba(138, 97, 0, 0.12);
+  --badge-ok-fg: #0c7a46;
+  --badge-ok-bg: rgba(12, 122, 70, 0.12);
+  --badge-mute-fg: rgba(0, 0, 0, 0.55);
+  --badge-mute-bg: rgba(0, 0, 0, 0.07);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-base: var(--surface-base);
+  --color-muted: var(--surface-muted);
+  --color-fg: var(--text-primary);
+  --color-fg2: var(--text-secondary);
+  --color-inv: var(--accent);
+  --color-key: var(--key);
+  --color-danger: var(--danger);
+  --color-line: var(--border-soft);
+  --color-line-strong: var(--border-strong);
+  --radius-xs: 10px;
+  --radius-sm: 24px;
+  --radius-pill: 100px;
+  --font-sans: "Noto Sans KR", "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-family: "Noto Sans KR", "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.7;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+
+/* 타이포 위계 — 유틸리티 클래스보다 우선 적용
+   (Apple §15: 큰 글자는 음수 트래킹 + 타이트한 리딩, 본문은 0) */
+h1 {
+  font-family: "BMHANNAAir", "Noto Sans KR", sans-serif;
+  letter-spacing: -0.015em;
+  line-height: 1.2 !important;
+  font-weight: 700 !important;
+}
+h2 {
+  font-family: "Pretendard Variable", Pretendard, "Noto Sans KR", sans-serif;
+  letter-spacing: -0.008em;
+  line-height: 1.4 !important;
+  font-weight: 500 !important;
+}
+
+/* 키보드 포커스 — WCAG 2.2 AA, focus-visible 필수 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@layer components {
+  /* 카드 */
+  .card {
+    background: var(--surface-muted);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    padding: calc(var(--spacing) * 5);
+  }
+  @media (min-width: 640px) {
+    .card { padding: calc(var(--spacing) * 6); }
+  }
+
+  /* 버튼 — pill(100px), 상태: default/hover/focus-visible/active/disabled */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-radius: var(--radius-pill);
+    font-size: 14px;
+    font-weight: 600;
+    padding: 10px 20px;
+    min-height: 44px; /* 터치 타깃 */
+    transition: background-color var(--dur-instant), color var(--dur-instant), border-color var(--dur-instant), opacity var(--dur-instant);
+    cursor: pointer;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Apple §1: 피드백은 press-down 순간에, 즉각적으로 */
+  .btn:active:not(:disabled) { transform: scale(0.97); transition: transform 100ms ease-out; }
+
+  .btn-primary { background: var(--key); color: var(--key-on); }
+  .btn-primary:hover:not(:disabled) { background: var(--key-hover); }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-strong);
+  }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); }
+
+  .btn-danger {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  }
+  .btn-danger:hover:not(:disabled) { border-color: var(--danger); }
+
+  /* 텍스트 링크형 버튼 */
+  .link-quiet {
+    color: color-mix(in srgb, var(--text-secondary) 75%, transparent);
+    font-size: 13.33px;
+    transition: color var(--dur-instant);
+  }
+  .link-quiet:hover { color: var(--text-primary); }
+
+  /* 리스트 행 hover */
+  .row-hover { transition: background-color var(--dur-instant); }
+  .row-hover:hover { background: var(--row-hover); }
+
+  /* 입력 — radius.xs(10px) */
+  .input, .textarea, .select {
+    width: 100%;
+    background: var(--field-bg);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-xs);
+    color: var(--text-primary);
+    font-size: 15px;
+    padding: 10px 14px;
+    transition: border-color var(--dur-instant), background-color var(--dur-instant);
+  }
+  .textarea { resize: vertical; min-height: 110px; line-height: 1.6; }
+  .input::placeholder, .textarea::placeholder { color: color-mix(in srgb, var(--text-secondary) 55%, transparent); }
+  .input:hover, .textarea:hover, .select:hover { border-color: var(--border-strong); }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--field-bg-focus);
+  }
+  .select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%23888888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; }
+
+  /* 선택형 보기 라벨 — 체크박스는 첫 줄 텍스트에 수직 정렬 */
+  .choice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-xs);
+    padding: 12px 14px;
+    font-size: 15px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color var(--dur-instant), background-color var(--dur-instant), color var(--dur-instant);
+  }
+  .choice:hover { border-color: var(--border-strong); }
+  .choice:active { transform: scale(0.99); transition: transform 100ms ease-out; }
+  .choice:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--choice-checked-bg);
+    color: var(--text-primary);
+  }
+  .choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .choice input {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    margin: 0;
+    accent-color: var(--key);
+  }
+  .choice span { min-width: 0; }
+
+  /* 상태 배지 */
+  .badge { border-radius: var(--radius-pill); padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  .badge-pending { background: var(--badge-mute-bg); color: var(--badge-mute-fg); }
+  .badge-progress { background: var(--badge-warn-bg); color: var(--badge-warn-fg); }
+  .badge-done { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
+
+  /* 로고 (원본 fill=black → 다크에서만 반전) */
+  .logo-invert { filter: invert(1) brightness(0.98); }
+  :root[data-theme="light"] .logo-invert { filter: none; }
+
+  /* Apple §12: 반투명 머티리얼 크롬 — 콘텐츠가 아래로 흐르는 플로팅 레이어 */
+  .chrome {
+    background: color-mix(in srgb, var(--surface-base) 76%, transparent);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+  }
+  .chrome-top { border-bottom: 1px solid var(--chrome-line); }
+  .chrome-bottom { border-top: 1px solid var(--chrome-line); }
+
+  /* 파트 전환 — 진행 방향을 암시하는 짧은 등장 모션 (Apple §8) */
+  .section-enter { animation: section-in 260ms ease-out; }
+  @keyframes section-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* Apple §14: 모션·투명도 접근성 신호 존중 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .chrome {
+    background: var(--surface-base);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
