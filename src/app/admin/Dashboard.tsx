@@ -61,6 +61,17 @@ export default function Dashboard() {
     }
   }
 
+  async function duplicateQuestionnaire(id: string) {
+    const res = await fetch(`/api/admin/questionnaires/${id}/duplicate`, { method: "POST" });
+    if (res.ok) {
+      const { id: newId } = await res.json();
+      // 복제 직후 바로 편집 화면으로 이동 — 새 프로젝트에 맞게 수정
+      window.location.href = `/admin/q/${newId}`;
+    } else {
+      alert("복제에 실패했습니다.");
+    }
+  }
+
   async function deleteQuestionnaire(id: string) {
     if (!confirm("질문지를 삭제하면 연결된 세션과 응답도 모두 삭제됩니다. 계속할까요?")) return;
     await fetch(`/api/admin/questionnaires/${id}`, { method: "DELETE" });
@@ -141,12 +152,17 @@ export default function Dashboard() {
                     {new Date(q.created_at).toLocaleDateString("ko-KR")} 생성 · 문항 편집 →
                   </span>
                 </Link>
-                <button
-                  onClick={() => deleteQuestionnaire(q.id)}
-                  className="link-quiet shrink-0 !text-danger/70 hover:!text-danger"
-                >
-                  삭제
-                </button>
+                <span className="flex shrink-0 items-center gap-4">
+                  <button onClick={() => duplicateQuestionnaire(q.id)} className="link-quiet" title="이 질문지를 복사해 새 질문지로 만듭니다">
+                    복제
+                  </button>
+                  <button
+                    onClick={() => deleteQuestionnaire(q.id)}
+                    className="link-quiet !text-danger/70 hover:!text-danger"
+                  >
+                    삭제
+                  </button>
+                </span>
               </div>
             </li>
           ))}
