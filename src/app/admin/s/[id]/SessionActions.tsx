@@ -45,9 +45,14 @@ export default function SessionActions({
           {unlocking ? "해제 중…" : "수정 잠금 해제"}
         </button>
       )}
-      <a href={`/api/admin/sessions/${sessionId}/export`} className="btn btn-primary !min-h-9 !py-1.5 text-xs">
+      <a href={`/api/admin/sessions/${sessionId}/export`} className="btn btn-ghost !min-h-9 !py-1.5 text-xs">
         마크다운 내보내기
       </a>
+      {status === "submitted" && (
+        <a href={`/admin/p/${sessionId}`} className="btn btn-primary !min-h-9 !py-1.5 text-xs">
+          디자인 기획 →
+        </a>
+      )}
     </div>
   );
 }

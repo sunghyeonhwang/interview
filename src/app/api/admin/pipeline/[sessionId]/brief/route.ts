@@ -1,0 +1,136 @@
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { isAdmin } from "@/lib/adminSession";
+import { claudeCall, extractJSON } from "@/lib/ai";
+import type { Question } from "@/lib/types";
+
+export const maxDuration = 300;
+
+type Params = { params: Promise<{ sessionId: string }> };
+
+const BRIEF_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["positioning", "keywords", "anti", "directions"],
+  properties: {
+    positioning: { type: "string", description: "핵심 포지셔닝 서술 (한국어, 2~3문장)" },
+    keywords: { type: "array", items: { type: "string" }, description: "무드/가치 키워드" },
+    anti: { type: "array", items: { type: "string" }, description: "피해야 할 방향·인상" },
+    directions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "concept", "mood", "search_queries"],
+        properties: {
+          name: { type: "string", description: "방향 이름 (한국어)" },
+          concept: { type: "string", description: "한 단락 컨셉 설명 (한국어)" },
+          mood: { type: "array", items: { type: "string" } },
+          search_queries: {
+            type: "array",
+            items: { type: "string" },
+            description: "실제 브랜드 벤치마크를 찾기 위한 웹 검색 쿼리 (영어/일본어/한국어 혼용, 수상·사례 중심)",
+          },
+        },
+      },
+    },
+  },
+};
+
+// 인터뷰 답변(읽기 전용) → 디자인 브리프 생성
+export async function POST(_req: NextRequest, { params }: Params) {
+  if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
+  const { sessionId } = await params;
+  const client = db();
+
+  // ── 인터뷰 데이터 조회 (SELECT만 — 절대 수정하지 않음) ──
+  const { data: session } = await client
+    .from("iv_sessions")
+    .select("id, respondent_name, status, questionnaire_id, iv_questionnaires(title)")
+    .eq("id", sessionId)
+    .single();
+  if (!session) return NextResponse.json({ error: "세션을 찾을 수 없습니다." }, { status: 404 });
+  if (session.status !== "submitted") {
+    return NextResponse.json({ error: "제출 완료된 인터뷰에서만 기획을 생성할 수 있습니다." }, { status: 400 });
+  }
+
+  const { data: sections } = await client
+    .from("iv_sections")
+    .select("*, iv_questions(*)")
+    .eq("questionnaire_id", session.questionnaire_id)
+    .order("order");
+  const { data: answers } = await client
+    .from("iv_answers")
+    .select("question_id, value")
+    .eq("session_id", sessionId);
+  const answerMap = new Map((answers ?? []).map((a) => [a.question_id, a.value]));
+
+  const qTitle = (session.iv_questionnaires as unknown as { title: string } | null)?.title ?? "";
+  const lines: string[] = [`# 인터뷰: ${qTitle} — ${session.respondent_name}`];
+  for (const s of sections ?? []) {
+    lines.push(`\n## ${s.title}`);
+    for (const q of ((s.iv_questions ?? []) as Question[]).sort((a, b) => a.order - b.order)) {
+      const v = answerMap.get(q.id);
+      if (v == null || v === "") continue;
+      lines.push(`- Q: ${q.prompt}\n  A: ${Array.isArray(v) ? v.join(", ") : String(v)}`);
+    }
+  }
+
+  // ── Claude로 브리프 생성 ──
+  const text = await claudeCall({
+    system: `너는 브랜드 전략가다. 대표 인터뷰 답변을 근거로 디자인 브리프를 만든다.
+규칙:
+- 모든 판단은 인터뷰 답변에 근거해야 하며, 답변에 없는 사실을 지어내지 않는다.
+- directions는 서로 전략적으로 뚜렷이 구분되는 2~3개 방향으로 만든다 (표면적 변형 금지).
+- search_queries는 각 방향당 2~3개. 실제 브랜드/로고 벤치마크 사례를 찾는 쿼리로:
+  디자인 어워드("good design award", "red dot", "iF design"), 큐레이션 매체(site:behance.net, site:bpando.org, site:underconsideration.com) 활용을 우선하고,
+  업종·지역·스타일 키워드를 조합한다. Pinterest는 절대 포함하지 않는다.
+- anti에는 인터뷰의 안티 레퍼런스 답변을 반드시 반영한다.`,
+    prompt: `다음 인터뷰를 분석해 브리프를 JSON으로 작성하라.\n\n${lines.join("\n")}`,
+    schema: BRIEF_SCHEMA,
+    effort: "medium",
+  });
+
+  const content = extractJSON<Record<string, unknown>>(text);
+
+  // upsert: 기존 브리프가 있으면 교체 (레퍼런스·시안은 CASCADE 유지되지 않도록 기존 brief 재사용)
+  const { data: existing } = await client
+    .from("iv_briefs")
+    .select("id")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await client
+      .from("iv_briefs")
+      .update({ content, updated_at: new Date().toISOString() })
+      .eq("id", existing.id)
+      .select()
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ brief: data });
+  }
+  const { data, error } = await client
+    .from("iv_briefs")
+    .insert({ session_id: sessionId, content })
+    .select()
+    .single();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ brief: data });
+}
+
+// 관리자가 브리프 직접 수정
+export async function PATCH(req: NextRequest, { params }: Params) {
+  if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
+  const { sessionId } = await params;
+  const { content } = await req.json().catch(() => ({}));
+  if (!content) return NextResponse.json({ error: "content가 필요합니다." }, { status: 400 });
+  const { data, error } = await db()
+    .from("iv_briefs")
+    .update({ content, updated_at: new Date().toISOString() })
+    .eq("session_id", sessionId)
+    .select()
+    .single();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ brief: data });
+}

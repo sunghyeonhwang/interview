@@ -9,10 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@auth/core": "^0.41.2",
+    "@google/genai": "^2.12.0",
     "@supabase/supabase-js": "^2.110.6",
     "jose": "^6.2.3",
     "next": "16.2.10",
+    "openai": "^6.47.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
