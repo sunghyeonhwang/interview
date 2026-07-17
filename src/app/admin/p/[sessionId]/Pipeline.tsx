@@ -10,7 +10,11 @@ interface Direction {
   concept: string;
   mood: string[];
   search_queries: string[];
+  origin?: "counter" | "seed"; // undefined = 인터뷰/애셋 기반, counter = 역제안, seed = 관리자 아이디어
 }
+const originBadge = (o?: string) =>
+  o === "counter" ? <span className="badge badge-progress">🔄 역제안</span> :
+  o === "seed" ? <span className="badge badge-pending">💡 아이디어</span> : null;
 interface Brief {
   id: string;
   content: { positioning: string; keywords: string[]; anti: string[]; directions: Direction[] };
@@ -194,6 +198,33 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     setBusy(null);
   }
 
+  // 전 방향 일괄 서치 (순차): 방향마다 Behance + AI 웹서치 실행, 실패 건은 건너뛰고 요약
+  async function searchAll() {
+    const jobs = directions.flatMap((d) => [
+      { d: d.name, source: "behance" as const, label: "Behance" },
+      ...(engines.includes("gemini") ? [{ d: d.name, source: undefined, label: "AI" }] : []),
+    ]);
+    if (!jobs.length) return;
+    setError("");
+    const fails: string[] = [];
+    for (let i = 0; i < jobs.length; i++) {
+      setBusy(`모두 서치 (${i + 1}/${jobs.length})`);
+      try {
+        const res = await fetch(`/api/admin/pipeline/${sessionId}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ direction: jobs[i].d, ...(jobs[i].source ? { source: jobs[i].source } : {}) }),
+        });
+        if (!res.ok) fails.push(`${jobs[i].d}(${jobs[i].label})`);
+      } catch {
+        fails.push(`${jobs[i].d}(${jobs[i].label})`);
+      }
+      await load();
+    }
+    setBusy(null);
+    if (fails.length) setError(`서치 실패 ${fails.length}건: ${fails.join(", ")}`);
+  }
+
   // 방향×엔진 전 조합 일괄 생성 (순차) — 실패 건은 건너뛰고 요약, 옵션에 따라 자동 평가로 이어감
   async function generateAll() {
     const combos = directions.flatMap((d) => engines.map((e) => ({ d: d.name, e })));
@@ -349,7 +380,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
               </div>
               {directions.map((d) => (
                 <div key={d.name} className="card">
-                  <h2 className="text-xl text-fg">{d.name}</h2>
+                  <h2 className="flex items-center gap-2 text-xl text-fg">{d.name} {originBadge(d.origin)}</h2>
                   <p className="mt-2 text-sm leading-relaxed text-fg2">{d.concept}</p>
                   <p className="mt-2 text-xs text-fg2">무드: {d.mood.join(" · ")}</p>
                   <div className="mt-3 space-y-1">
@@ -359,6 +390,19 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   </div>
                 </div>
               ))}
+              <DirectionExpand
+                busy={!!busy}
+                onExpand={(mode, note) =>
+                  run(mode === "counter" ? "역제안 방향 생성" : "아이디어 방향 확장", () =>
+                    fetch(`/api/admin/pipeline/${sessionId}/brief/expand`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ mode, note }),
+                    })
+                  )
+                }
+              />
+
               <div className="flex gap-2">
                 <button onClick={() => setEditingBrief(true)} disabled={!!busy} className="btn btn-ghost">
                   ✏️ 직접 수정
@@ -384,12 +428,23 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           ) : (
             <>
               <div className="card">
-                <h2 className="text-xl text-fg">벤치마크 서치</h2>
-                <p className="mt-1 text-[13px] text-fg2">방향별 자동 쿼리 또는 직접 입력으로 실제 브랜드 사례를 수집합니다. Pinterest는 제외됩니다.</p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl text-fg">벤치마크 서치</h2>
+                    <p className="mt-1 text-[13px] text-fg2">방향별 자동 쿼리 또는 직접 입력으로 실제 브랜드 사례를 수집합니다. Pinterest는 제외됩니다.</p>
+                  </div>
+                  <button
+                    onClick={searchAll}
+                    disabled={!!busy || directions.length === 0}
+                    className="btn btn-primary shrink-0"
+                  >
+                    {busy?.startsWith("모두 서치") ? `⏳ ${busy}` : `🔍 모두 서치 (${directions.length}개 방향 전체)`}
+                  </button>
+                </div>
                 <div className="mt-4 space-y-2">
                   {directions.map((d) => (
                     <div key={d.name} className="flex flex-wrap items-center gap-2">
-                      <span className="min-w-32 text-sm font-semibold text-fg">{d.name}</span>
+                      <span className="flex min-w-32 items-center gap-1.5 text-sm font-semibold text-fg">{d.name} {originBadge(d.origin)}</span>
                       <button
                         onClick={() => run(`"${d.name}" AI 서치`, () => fetch(`/api/admin/pipeline/${sessionId}/search`, {
                           method: "POST",
@@ -540,7 +595,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 <div className="mt-4 space-y-2">
                   {directions.map((d) => (
                     <div key={d.name} className="flex flex-wrap items-center gap-2">
-                      <span className="min-w-32 text-sm font-semibold text-fg">{d.name}</span>
+                      <span className="flex min-w-32 items-center gap-1.5 text-sm font-semibold text-fg">{d.name} {originBadge(d.origin)}</span>
                       {engines.map((e) => {
                         const label = `${d.name} 시안 (${engineLabel(e)})`;
                         const running = busy === label;
@@ -1077,6 +1132,56 @@ function CompareView({
   );
 }
 
+// 방향 확장 — 역제안(counter) / 아이디어 확장(seed)
+function DirectionExpand({ busy, onExpand }: { busy: boolean; onExpand: (mode: "counter" | "seed", note: string) => void }) {
+  const [counterNote, setCounterNote] = useState("");
+  const [seed, setSeed] = useState("");
+  return (
+    <div className="card">
+      <h2 className="text-xl text-fg">방향 추가</h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-fg2">
+        인터뷰 기반 방향이 시안으로 안 맞을 때 — AI가 지금까지의 시안·평가를 근거로{" "}
+        <strong className="text-fg">의도적으로 다른 대안</strong>을 제안하거나, 직접 낸 아이디어를 방향으로 확장합니다.
+      </p>
+      <div className="mt-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={counterNote}
+            onChange={(e) => setCounterNote(e.target.value)}
+            placeholder="현재 결과가 안 맞는 이유 (선택) — 예: 너무 차분함, 더 대담한 인상이 필요"
+            className="input min-w-64 flex-1 !py-1.5 text-sm"
+            disabled={busy}
+          />
+          <button
+            onClick={() => { onExpand("counter", counterNote.trim()); setCounterNote(""); }}
+            disabled={busy}
+            className="btn btn-ghost shrink-0 !min-h-9 !py-1.5 text-xs"
+          >
+            🔄 역제안 방향 받기
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={seed}
+            onChange={(e) => setSeed(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && seed.trim() && (onExpand("seed", seed.trim()), setSeed(""))}
+            placeholder="아이디어 한 줄 — 예: 레트로 세리프 워드마크로, 수공예 느낌으로"
+            className="input min-w-64 flex-1 !py-1.5 text-sm"
+            disabled={busy}
+          />
+          <button
+            onClick={() => { onExpand("seed", seed.trim()); setSeed(""); }}
+            disabled={busy || !seed.trim()}
+            className="btn btn-ghost shrink-0 !min-h-9 !py-1.5 text-xs"
+          >
+            💡 방향으로 확장
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // 다음 회차 시작 — 피드백 입력 후 실행
 function NextRound({ disabled, hint, onStart }: { disabled: boolean; hint: string; onStart: (feedback: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -1134,6 +1239,7 @@ function BriefEditor({
       concept: d.concept,
       mood: (d.mood ?? []).join(", "),
       queries: (d.search_queries ?? []).join("\n"),
+      origin: d.origin,
     }))
   );
   const split = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
@@ -1196,7 +1302,7 @@ function BriefEditor({
         </div>
       ))}
       <button
-        onClick={() => setDirs((ds) => [...ds, { name: "", concept: "", mood: "", queries: "" }])}
+        onClick={() => setDirs((ds) => [...ds, { name: "", concept: "", mood: "", queries: "", origin: undefined }])}
         className="btn btn-ghost !min-h-9 !py-1.5 text-xs"
       >
         ＋ 방향 추가
@@ -1215,6 +1321,7 @@ function BriefEditor({
                   concept: d.concept.trim(),
                   mood: split(d.mood),
                   search_queries: d.queries.split("\n").map((q) => q.trim()).filter(Boolean),
+                  ...(d.origin ? { origin: d.origin } : {}),
                 })),
             })
           }
