@@ -40,6 +40,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   let concepts: unknown[] = [];
   let svgs: unknown[] = [];
   let evaluations: unknown[] = [];
+  let mockups: unknown[] = [];
   if (brief) {
     const [r, c] = await Promise.all([
       client.from("iv_references").select("*").eq("brief_id", brief.id).order("created_at"),
@@ -49,12 +50,14 @@ export async function GET(_req: NextRequest, { params }: Params) {
     concepts = c.data ?? [];
     const conceptIds = (c.data ?? []).map((x) => x.id);
     if (conceptIds.length) {
-      const [s, e] = await Promise.all([
+      const [s, e, m] = await Promise.all([
         client.from("iv_svgs").select("*").in("concept_id", conceptIds).order("created_at"),
         client.from("iv_evaluations").select("*").in("concept_id", conceptIds).order("created_at", { ascending: false }),
+        client.from("iv_mockups").select("*").in("concept_id", conceptIds).order("created_at"),
       ]);
       svgs = s.data ?? [];
       evaluations = e.data ?? [];
+      mockups = m.data ?? [];
     }
   }
 
@@ -66,6 +69,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     concepts,
     svgs,
     evaluations,
+    mockups,
     engines: availableEngines(),
     claudeReady: !!process.env.ANTHROPIC_API_KEY,
   });

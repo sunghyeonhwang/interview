@@ -1,6 +1,6 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import { GoogleGenAI } from "@google/genai";
 
 // ── Claude: 기획·서치·프롬프트 구성·SVG 재작성 ──────────────────
@@ -109,17 +109,25 @@ export function availableEngines(): ImageEngine[] {
   return engines;
 }
 
-export async function generateImage(engine: ImageEngine, prompt: string): Promise<Buffer> {
+/** 이미지 생성. inputImage(PNG Buffer)를 주면 그 이미지를 기반으로 편집·합성한다 (목업 등) */
+export async function generateImage(engine: ImageEngine, prompt: string, inputImage?: Buffer): Promise<Buffer> {
   if (engine === "openai") {
     if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY가 설정되지 않았습니다.");
     const client = new OpenAI();
     try {
-      const res = await client.images.generate({
-        model: "gpt-image-1",
-        prompt,
-        size: "1024x1024",
-        quality: "medium",
-      });
+      const res = inputImage
+        ? await client.images.edit({
+            model: "gpt-image-1",
+            image: await toFile(inputImage, "input.png", { type: "image/png" }),
+            prompt,
+            size: "1024x1024",
+          })
+        : await client.images.generate({
+            model: "gpt-image-1",
+            prompt,
+            size: "1024x1024",
+            quality: "medium",
+          });
       const b64 = res.data?.[0]?.b64_json;
       if (!b64) throw new Error("OpenAI 이미지 생성 결과가 비어 있습니다.");
       return Buffer.from(b64, "base64");
@@ -134,7 +142,12 @@ export async function generateImage(engine: ImageEngine, prompt: string): Promis
   try {
     const res = await ai.models.generateContent({
       model: "gemini-2.5-flash-image",
-      contents: prompt,
+      contents: inputImage
+        ? [
+            { inlineData: { mimeType: "image/png", data: inputImage.toString("base64") } },
+            { text: prompt },
+          ]
+        : prompt,
     });
     for (const part of res.candidates?.[0]?.content?.parts ?? []) {
       if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");

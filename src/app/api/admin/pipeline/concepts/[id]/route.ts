@@ -23,9 +23,12 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   const client = db();
   const { data: concept } = await client.from("iv_concepts").select("*").eq("id", id).single();
   if (concept) {
+    const { data: mockups } = await client.from("iv_mockups").select("image_path").eq("concept_id", id);
     await client.storage
       .from("iv-concepts")
-      .remove([concept.image_light_path, concept.image_dark_path].filter(Boolean));
+      .remove(
+        [concept.image_light_path, concept.image_dark_path, ...(mockups ?? []).map((m) => m.image_path)].filter(Boolean)
+      );
   }
   const { error } = await client.from("iv_concepts").delete().eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

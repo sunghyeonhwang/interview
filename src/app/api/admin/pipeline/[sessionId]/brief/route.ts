@@ -177,15 +177,30 @@ ${images.length ? `- 첨부 이미지: 원본 로고 애셋 ${images.length}건`
   return NextResponse.json({ brief: data });
 }
 
-// 관리자가 브리프 직접 수정
+// 관리자가 브리프 내용·평가 기준 직접 수정
 export async function PATCH(req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const { sessionId } = await params;
-  const { content } = await req.json().catch(() => ({}));
-  if (!content) return NextResponse.json({ error: "content가 필요합니다." }, { status: 400 });
+  const { content, criteria } = await req.json().catch(() => ({}));
+  if (!content && criteria === undefined) {
+    return NextResponse.json({ error: "content 또는 criteria가 필요합니다." }, { status: 400 });
+  }
+  if (criteria !== undefined && criteria !== null) {
+    const list = criteria as { criterion?: string; weight?: number }[];
+    if (!Array.isArray(list) || !list.length || list.some((c) => !c.criterion?.trim() || !(Number(c.weight) > 0))) {
+      return NextResponse.json({ error: "기준명과 양수 가중치를 모두 입력하세요." }, { status: 400 });
+    }
+    const sum = list.reduce((s, c) => s + Number(c.weight), 0);
+    if (sum !== 100) {
+      return NextResponse.json({ error: `가중치 합이 100이어야 합니다 (현재 ${sum}).` }, { status: 400 });
+    }
+  }
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (content) patch.content = content;
+  if (criteria !== undefined) patch.criteria = criteria; // null이면 기본 기준으로 복원
   const { data, error } = await db()
     .from("iv_briefs")
-    .update({ content, updated_at: new Date().toISOString() })
+    .update(patch)
     .or(ownerFilter(sessionId))
     .select()
     .single();

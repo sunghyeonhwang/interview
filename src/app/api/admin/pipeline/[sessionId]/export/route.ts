@@ -123,6 +123,18 @@ export async function GET(_req: NextRequest, { params }: Params) {
     }
   }
 
+  // 목업 포함
+  const { data: mockups } = conceptIds.length
+    ? await client.from("iv_mockups").select("id, kind, image_path").in("concept_id", conceptIds)
+    : { data: [] };
+  if (mockups?.length) {
+    const mockupFolder = zip.folder("mockup");
+    for (const m of mockups) {
+      const { data: file } = await client.storage.from("iv-concepts").download(m.image_path);
+      if (file) mockupFolder?.file(`${m.kind}-${m.id.slice(0, 8)}.png`, Buffer.from(await file.arrayBuffer()));
+    }
+  }
+
   const buf = await zip.generateAsync({ type: "nodebuffer" });
   return new NextResponse(new Uint8Array(buf), {
     headers: {

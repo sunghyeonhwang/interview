@@ -2,18 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
 import { claudeCall, extractJSON } from "@/lib/ai";
+import { DEFAULT_CRITERIA } from "@/lib/criteria";
 
 export const maxDuration = 300;
-
-// 기본 평가 기준 (브랜딩_에이전트_세팅.md 합의 가중치)
-const CRITERIA = [
-  { criterion: "전략 적합성", weight: 25, hint: "브리프의 포지셔닝·방향과 얼마나 일치하는가" },
-  { criterion: "고객 신뢰·이해도", weight: 20, hint: "핵심 고객이 신뢰를 느끼고 즉시 이해할 수 있는가" },
-  { criterion: "차별성", weight: 15, hint: "업계 관습·경쟁 대비 구별되는가" },
-  { criterion: "접점 확장성", weight: 15, hint: "간판·앱 아이콘·인쇄물 등 다양한 크기·매체에서 작동하겠는가" },
-  { criterion: "가독성·접근성", weight: 15, hint: "명도 대비, 소형 사이즈 판독성, 색각 이상 고려" },
-  { criterion: "제작·권리 리스크", weight: 10, hint: "제작 난이도, 기존 상표와의 유사 가능성, 규제 표현 리스크 (높을수록 안전)" },
-];
 
 const EVAL_SCHEMA = {
   type: "object",
@@ -46,7 +37,11 @@ export async function POST(req: NextRequest) {
 
   const { data: concept } = await client.from("iv_concepts").select("*").eq("id", concept_id).single();
   if (!concept) return NextResponse.json({ error: "시안을 찾을 수 없습니다." }, { status: 404 });
-  const { data: brief } = await client.from("iv_briefs").select("content").eq("id", concept.brief_id).single();
+  const { data: brief } = await client.from("iv_briefs").select("content, criteria").eq("id", concept.brief_id).single();
+
+  // 브리프별 커스텀 기준 (없으면 기본 6개)
+  const rawCriteria = (brief?.criteria ?? null) as { criterion: string; weight: number; hint?: string }[] | null;
+  const CRITERIA = rawCriteria?.length ? rawCriteria : DEFAULT_CRITERIA;
 
   // 라이트/다크 두 장 모두 비전 입력 (다크 모드 가독성도 평가에 반영)
   const images: string[] = [];
@@ -74,7 +69,7 @@ export async function POST(req: NextRequest) {
 제작 의도: ${concept.rationale ?? "(없음)"}
 
 ## 평가 기준 (기준명은 정확히 이대로 사용)
-${CRITERIA.map((c) => `- ${c.criterion} (가중치 ${c.weight}): ${c.hint}`).join("\n")}
+${CRITERIA.map((c) => `- ${c.criterion} (가중치 ${c.weight})${c.hint ? `: ${c.hint}` : ""}`).join("\n")}
 
 이미지를 관찰하고 기준별로 채점해 JSON으로 출력하라.`,
     images,

@@ -1,8 +1,9 @@
 "use client";
 
 /* eslint-disable @next/next/no-img-element */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { DEFAULT_CRITERIA, type Criterion } from "@/lib/criteria";
 
 interface Direction {
   name: string;
@@ -16,6 +17,7 @@ interface Brief {
   status: string;
   current_round: number;
   round_feedback: { round: number; feedback: string }[];
+  criteria: Criterion[] | null;
 }
 interface Reference {
   id: string;
@@ -45,6 +47,18 @@ interface Svg {
   version: number;
   svg: string;
 }
+interface Mockup {
+  id: string;
+  concept_id: string;
+  kind: string;
+}
+const MOCKUP_KINDS: { kind: string; label: string }[] = [
+  { kind: "sign", label: "간판" },
+  { kind: "card", label: "명함" },
+  { kind: "appicon", label: "앱 아이콘" },
+  { kind: "uniform", label: "유니폼" },
+];
+const mockupLabel = (k: string) => MOCKUP_KINDS.find((m) => m.kind === k)?.label ?? k;
 interface Evaluation {
   id: string;
   concept_id: string;
@@ -69,6 +83,7 @@ interface State {
   concepts: Concept[];
   svgs: Svg[];
   evaluations: Evaluation[];
+  mockups: Mockup[];
   engines: ("openai" | "gemini")[];
   claudeReady: boolean;
 }
@@ -98,6 +113,9 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const [genOpts, setGenOpts] = useState<GenOptions>({ logo_type: "", color_hint: "", extra: "" });
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
+  const [autoEval, setAutoEval] = useState(false);
+  const [editingBrief, setEditingBrief] = useState(false);
+  const [editingCriteria, setEditingCriteria] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/admin/pipeline/${sessionId}`);
@@ -130,25 +148,32 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     return <p className="text-sm text-fg2">{error || "불러오는 중…"}</p>;
   }
 
-  const { brief, references, concepts, svgs, evaluations, engines } = state;
+  const { brief, references, concepts, svgs, evaluations, mockups, engines } = state;
   const directions = brief?.content.directions ?? [];
   const selectedConcepts = concepts.filter((c) => c.selected);
   const latestEval = (conceptId: string) => evaluations.find((e) => e.concept_id === conceptId);
   const svgsOf = (conceptId: string) => svgs.filter((s) => s.concept_id === conceptId);
 
   // 예상 API 비용 (추정 단가 — 시안: 구성 $0.05 + 이미지 2장 $0.08, 평가 $0.10, SVG $0.12, 브리프 $0.15)
-  const estCost = (brief ? 0.15 : 0) + concepts.length * 0.13 + evaluations.length * 0.1 + svgs.length * 0.12;
+  const estCost =
+    (brief ? 0.15 : 0) + concepts.length * 0.13 + evaluations.length * 0.1 + svgs.length * 0.12 + mockups.length * 0.06;
 
   const toggleCompare = (id: string) =>
     setCompareIds((ids) =>
       ids.includes(id) ? ids.filter((x) => x !== id) : ids.length >= 4 ? ids : [...ids, id]
     );
 
-  // 미평가 시안 일괄 평가 (순차 실행)
+  // 미평가 시안 일괄 평가 (순차 실행) — 서버에서 최신 목록을 다시 받아 대상 산정
   async function evaluateAll() {
-    const targets = concepts.filter((c) => !latestEval(c.id));
-    if (!targets.length) return;
     setError("");
+    const fresh = await fetch(`/api/admin/pipeline/${sessionId}`);
+    if (!fresh.ok) return;
+    const st = (await fresh.json()) as State;
+    const targets = st.concepts.filter((c) => !st.evaluations.some((e) => e.concept_id === c.id));
+    if (!targets.length) {
+      setBusy(null);
+      return;
+    }
     for (let i = 0; i < targets.length; i++) {
       setBusy(`모두 평가 (${i + 1}/${targets.length})`);
       try {
@@ -167,6 +192,39 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
       await load();
     }
     setBusy(null);
+  }
+
+  // 방향×엔진 전 조합 일괄 생성 (순차) — 실패 건은 건너뛰고 요약, 옵션에 따라 자동 평가로 이어감
+  async function generateAll() {
+    const combos = directions.flatMap((d) => engines.map((e) => ({ d: d.name, e })));
+    if (!combos.length) return;
+    setError("");
+    const fails: string[] = [];
+    for (let i = 0; i < combos.length; i++) {
+      setBusy(`모두 생성 (${i + 1}/${combos.length})`);
+      try {
+        const res = await fetch(`/api/admin/pipeline/${sessionId}/concepts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            direction: combos[i].d,
+            engine: combos[i].e,
+            options: {
+              logo_type: genOpts.logo_type || undefined,
+              color_hint: genOpts.color_hint || undefined,
+              extra: genOpts.extra || undefined,
+            },
+          }),
+        });
+        if (!res.ok) fails.push(`${combos[i].d}(${engineLabel(combos[i].e)})`);
+      } catch {
+        fails.push(`${combos[i].d}(${engineLabel(combos[i].e)})`);
+      }
+      await load();
+    }
+    setBusy(null);
+    if (fails.length) setError(`생성 실패 ${fails.length}건: ${fails.join(", ")}`);
+    if (autoEval) await evaluateAll();
   }
 
   return (
@@ -261,6 +319,20 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 브리프 생성
               </button>
             </div>
+          ) : editingBrief ? (
+            <BriefEditor
+              initial={brief.content}
+              busy={!!busy}
+              onCancel={() => setEditingBrief(false)}
+              onSave={(content) => {
+                setEditingBrief(false);
+                run("브리프 수정", () => fetch(`/api/admin/pipeline/${sessionId}/brief`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ content }),
+                }));
+              }}
+            />
           ) : (
             <>
               <div className="card">
@@ -287,13 +359,18 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   </div>
                 </div>
               ))}
-              <button
-                onClick={() => confirm("브리프를 다시 생성할까요? 기존 내용은 교체됩니다 (레퍼런스·시안은 유지).") && run("브리프 재생성", () => fetch(`/api/admin/pipeline/${sessionId}/brief`, { method: "POST" }))}
-                disabled={!!busy}
-                className="btn btn-ghost"
-              >
-                재생성
-              </button>
+              <div className="flex gap-2">
+                <button onClick={() => setEditingBrief(true)} disabled={!!busy} className="btn btn-ghost">
+                  ✏️ 직접 수정
+                </button>
+                <button
+                  onClick={() => confirm("브리프를 다시 생성할까요? 기존 내용은 교체됩니다 (레퍼런스·시안은 유지).") && run("브리프 재생성", () => fetch(`/api/admin/pipeline/${sessionId}/brief`, { method: "POST" }))}
+                  disabled={!!busy}
+                  className="btn btn-ghost"
+                >
+                  재생성
+                </button>
+              </div>
             </>
           )}
         </section>
@@ -493,6 +570,26 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     </div>
                   ))}
                 </div>
+
+                {/* 일괄 생성 */}
+                <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-line pt-4">
+                  <button
+                    onClick={generateAll}
+                    disabled={!!busy || engines.length === 0 || directions.length === 0}
+                    className="btn btn-primary"
+                  >
+                    {busy?.startsWith("모두 생성") ? `⏳ ${busy}` : `▶ 모두 생성 (방향 ${directions.length} × 엔진 ${engines.length} = ${directions.length * engines.length}건)`}
+                  </button>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-fg2">
+                    <input
+                      type="checkbox"
+                      checked={autoEval}
+                      onChange={(e) => setAutoEval(e.target.checked)}
+                      className="h-4 w-4 accent-(--key)"
+                    />
+                    생성 후 자동 평가
+                  </label>
+                </div>
                 {engines.length === 0 && <p className="mt-3 text-sm text-danger">⚠️ OPENAI_API_KEY / GEMINI_API_KEY가 없어 이미지 생성을 사용할 수 없습니다.</p>}
               </div>
 
@@ -502,6 +599,10 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     <div className="grid grid-cols-2 gap-2">
                       <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=light`} alt="라이트" className="w-full rounded-(--radius-xs) bg-white" loading="lazy" />
                       <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=dark`} alt="다크" className="w-full rounded-(--radius-xs) bg-black" loading="lazy" />
+                    </div>
+                    <div className="mt-1.5 flex gap-3 text-xs">
+                      <a href={`/api/admin/pipeline/concepts/${c.id}/file?mode=light&dl=1`} className="link-quiet">⬇ 라이트 PNG</a>
+                      <a href={`/api/admin/pipeline/concepts/${c.id}/file?mode=dark&dl=1`} className="link-quiet">⬇ 다크 PNG</a>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <span className="badge badge-pending">{c.direction}</span>
@@ -552,6 +653,15 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                         <strong className="text-fg">제작 의도</strong> — {c.rationale}
                       </p>
                     )}
+                    <PromptView
+                      prompt={c.prompt}
+                      busy={!!busy}
+                      onRegen={(p) => run(`프롬프트 재생성 (${c.direction})`, () => fetch(`/api/admin/pipeline/${sessionId}/concepts`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ direction: c.direction, engine: c.engine, prompt_override: p }),
+                      }))}
+                    />
                   </div>
                 ))}
               </div>
@@ -573,17 +683,54 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   <div>
                     <h2 className="text-xl text-fg">AI 평가</h2>
                     <p className="mt-1 text-[13px] text-fg2">
-                      독립 리뷰 보드 관점으로 채점 — 전략 적합성(25) · 고객 신뢰(20) · 차별성(15) · 확장성(15) · 가독성(15) · 리스크(10)
+                      독립 리뷰 보드 관점으로 채점 —{" "}
+                      {(brief?.criteria ?? DEFAULT_CRITERIA).map((c) => `${c.criterion}(${c.weight})`).join(" · ")}
+                      {brief?.criteria && <span className="ml-1 badge badge-progress">커스텀</span>}
                     </p>
                   </div>
-                  <button
-                    onClick={evaluateAll}
-                    disabled={!!busy || !state.claudeReady || concepts.every((c) => !!latestEval(c.id))}
-                    className="btn btn-primary shrink-0"
-                  >
-                    {busy?.startsWith("모두 평가") ? `⏳ ${busy}` : `▶ 모두 평가하기 (미평가 ${concepts.filter((c) => !latestEval(c.id)).length}개)`}
-                  </button>
+                  <span className="flex shrink-0 gap-2">
+                    <button
+                      onClick={() => setEditingCriteria((v) => !v)}
+                      disabled={!!busy}
+                      className="btn btn-ghost !min-h-9 !py-1.5 text-xs"
+                    >
+                      {editingCriteria ? "✕ 닫기" : "⚙ 기준 편집"}
+                    </button>
+                    <button
+                      onClick={evaluateAll}
+                      disabled={!!busy || !state.claudeReady || concepts.every((c) => !!latestEval(c.id))}
+                      className="btn btn-primary"
+                    >
+                      {busy?.startsWith("모두 평가") ? `⏳ ${busy}` : `▶ 모두 평가하기 (미평가 ${concepts.filter((c) => !latestEval(c.id)).length}개)`}
+                    </button>
+                  </span>
                 </div>
+                {editingCriteria && brief && (
+                  <CriteriaEditor
+                    initial={brief.criteria ?? DEFAULT_CRITERIA}
+                    isCustom={!!brief.criteria}
+                    busy={!!busy}
+                    onSave={(criteria) => {
+                      setEditingCriteria(false);
+                      run("평가 기준 저장", () => fetch(`/api/admin/pipeline/${sessionId}/brief`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ criteria }),
+                      }));
+                    }}
+                    onReset={() => {
+                      setEditingCriteria(false);
+                      run("기본 기준 복원", () => fetch(`/api/admin/pipeline/${sessionId}/brief`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ criteria: null }),
+                      }));
+                    }}
+                  />
+                )}
+                <p className="mt-2 text-xs text-fg2/60">
+                  ※ 기준 변경은 이후 평가부터 적용됩니다. 기존 평가 결과는 그대로 보존됩니다.
+                </p>
               </div>
 
               {/* 랭킹 (평가된 시안만, 총점순) */}
@@ -748,11 +895,83 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                           </button>
                         </span>
                       </div>
+                      <SvgColorEditor
+                        key={s.id + s.svg.length}
+                        original={s.svg}
+                        busy={!!busy}
+                        onSave={(edited) => run("SVG 컬러 저장", () => fetch(`/api/admin/pipeline/svg/${s.id}`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ svg: edited }),
+                        }))}
+                      />
                     </div>
                   );
                 })}
               </div>
               {svgs.length === 0 && <p className="text-center text-sm text-fg2">아직 생성된 SVG가 없습니다.</p>}
+
+              {/* 목업 미리보기 */}
+              <div className="card">
+                <h2 className="text-xl text-fg">목업 미리보기</h2>
+                <p className="mt-1 text-[13px] text-fg2">선택된 시안을 실제 매체에 합성해 확인합니다. (시안 이미지 기반 AI 합성)</p>
+                <div className="mt-4 space-y-2">
+                  {selectedConcepts.map((c) => (
+                    <div key={c.id} className="flex flex-wrap items-center gap-2">
+                      <span className="min-w-40 text-sm font-semibold text-fg">
+                        {c.direction} · {c.round}회차 · {engineLabel(c.engine)} #{c.version}
+                      </span>
+                      {MOCKUP_KINDS.map((k) => {
+                        const label = `목업 (${k.label})`;
+                        return (
+                          <button
+                            key={k.kind}
+                            onClick={() => run(label, () => fetch(`/api/admin/pipeline/mockups`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ concept_id: c.id, kind: k.kind }),
+                            }))}
+                            disabled={!!busy || engines.length === 0}
+                            className={`btn !min-h-9 !py-1.5 text-xs ${busy === label ? "btn-primary" : "btn-ghost"}`}
+                          >
+                            {busy === label ? "⏳ 합성 중…" : `${k.label} 생성`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+                {mockups.length > 0 && (
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                    {mockups.map((m) => {
+                      const parent = concepts.find((c) => c.id === m.concept_id);
+                      return (
+                        <div key={m.id} className="min-w-0">
+                          <img
+                            src={`/api/admin/pipeline/mockups/${m.id}`}
+                            alt={mockupLabel(m.kind)}
+                            className="w-full rounded-(--radius-xs) border border-line bg-white"
+                            loading="lazy"
+                          />
+                          <div className="mt-1.5 flex items-center gap-2 text-xs">
+                            <span className="badge badge-pending">{mockupLabel(m.kind)}</span>
+                            <span className="truncate text-fg2/60">{parent?.direction ?? ""}</span>
+                            <span className="ml-auto flex gap-2">
+                              <a href={`/api/admin/pipeline/mockups/${m.id}?dl=1`} className="link-quiet">⬇</a>
+                              <button
+                                onClick={() => confirm("이 목업을 삭제할까요?") && run("삭제", () => fetch(`/api/admin/pipeline/mockups/${m.id}`, { method: "DELETE" }))}
+                                className="link-quiet !text-danger/70 hover:!text-danger"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </section>
@@ -891,6 +1110,328 @@ function NextRound({ disabled, hint, onStart }: { disabled: boolean; hint: strin
       </button>
       <button onClick={() => setOpen(false)} className="link-quiet">취소</button>
     </span>
+  );
+}
+
+// 브리프 구조화 편집 폼
+function BriefEditor({
+  initial,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  initial: Brief["content"];
+  busy: boolean;
+  onSave: (content: Brief["content"]) => void;
+  onCancel: () => void;
+}) {
+  const [positioning, setPositioning] = useState(initial.positioning);
+  const [keywords, setKeywords] = useState(initial.keywords.join(", "));
+  const [anti, setAnti] = useState(initial.anti.join(", "));
+  const [dirs, setDirs] = useState(
+    initial.directions.map((d) => ({
+      name: d.name,
+      concept: d.concept,
+      mood: (d.mood ?? []).join(", "),
+      queries: (d.search_queries ?? []).join("\n"),
+    }))
+  );
+  const split = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
+  const setDir = (i: number, patch: Partial<(typeof dirs)[number]>) =>
+    setDirs((ds) => ds.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+
+  return (
+    <div className="card space-y-4">
+      <h2 className="text-xl text-fg">브리프 수정</h2>
+      <div>
+        <label className="text-xs font-semibold text-fg2">포지셔닝</label>
+        <textarea value={positioning} onChange={(e) => setPositioning(e.target.value)} rows={3} className="textarea mt-1 w-full" />
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div>
+          <label className="text-xs font-semibold text-fg2">키워드 (콤마 구분)</label>
+          <input value={keywords} onChange={(e) => setKeywords(e.target.value)} className="input mt-1" />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-fg2">피할 것 (콤마 구분)</label>
+          <input value={anti} onChange={(e) => setAnti(e.target.value)} className="input mt-1" />
+        </div>
+      </div>
+      {dirs.map((d, i) => (
+        <div key={i} className="rounded-(--radius-xs) border border-line p-4">
+          <div className="flex items-center justify-between gap-2">
+            <input
+              value={d.name}
+              onChange={(e) => setDir(i, { name: e.target.value })}
+              className="input flex-1 font-semibold"
+              placeholder="방향 이름"
+            />
+            <button
+              onClick={() => setDirs((ds) => ds.filter((_, j) => j !== i))}
+              className="link-quiet shrink-0 !text-danger/70 hover:!text-danger"
+            >
+              방향 삭제
+            </button>
+          </div>
+          <textarea
+            value={d.concept}
+            onChange={(e) => setDir(i, { concept: e.target.value })}
+            rows={2}
+            className="textarea mt-2 w-full"
+            placeholder="컨셉 설명"
+          />
+          <input
+            value={d.mood}
+            onChange={(e) => setDir(i, { mood: e.target.value })}
+            className="input mt-2"
+            placeholder="무드 (콤마 구분)"
+          />
+          <textarea
+            value={d.queries}
+            onChange={(e) => setDir(i, { queries: e.target.value })}
+            rows={2}
+            className="textarea mt-2 w-full font-mono text-xs"
+            placeholder="서치 쿼리 (줄바꿈 구분)"
+          />
+        </div>
+      ))}
+      <button
+        onClick={() => setDirs((ds) => [...ds, { name: "", concept: "", mood: "", queries: "" }])}
+        className="btn btn-ghost !min-h-9 !py-1.5 text-xs"
+      >
+        ＋ 방향 추가
+      </button>
+      <div className="flex gap-2 border-t border-line pt-4">
+        <button
+          onClick={() =>
+            onSave({
+              positioning: positioning.trim(),
+              keywords: split(keywords),
+              anti: split(anti),
+              directions: dirs
+                .filter((d) => d.name.trim())
+                .map((d) => ({
+                  name: d.name.trim(),
+                  concept: d.concept.trim(),
+                  mood: split(d.mood),
+                  search_queries: d.queries.split("\n").map((q) => q.trim()).filter(Boolean),
+                })),
+            })
+          }
+          disabled={busy || !positioning.trim()}
+          className="btn btn-primary"
+        >
+          저장
+        </button>
+        <button onClick={onCancel} className="btn btn-ghost">취소</button>
+      </div>
+    </div>
+  );
+}
+
+// 평가 기준 편집 — 가중치 합 100 검증
+function CriteriaEditor({
+  initial,
+  isCustom,
+  busy,
+  onSave,
+  onReset,
+}: {
+  initial: Criterion[];
+  isCustom: boolean;
+  busy: boolean;
+  onSave: (criteria: Criterion[]) => void;
+  onReset: () => void;
+}) {
+  const [rows, setRows] = useState(initial.map((c) => ({ ...c, hint: c.hint ?? "" })));
+  const sum = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
+  const valid = rows.length > 0 && rows.every((r) => r.criterion.trim() && Number(r.weight) > 0) && sum === 100;
+  const setRow = (i: number, patch: Partial<Criterion>) =>
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  return (
+    <div className="mt-4 space-y-2 border-t border-line pt-4">
+      {rows.map((r, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-2">
+          <input
+            value={r.criterion}
+            onChange={(e) => setRow(i, { criterion: e.target.value })}
+            placeholder="기준명"
+            className="input !min-h-9 w-44 !py-1.5 text-sm"
+          />
+          <input
+            type="number"
+            value={r.weight}
+            onChange={(e) => setRow(i, { weight: Number(e.target.value) })}
+            min={1}
+            max={100}
+            className="input !min-h-9 w-20 !py-1.5 text-sm"
+            aria-label="가중치"
+          />
+          <input
+            value={r.hint}
+            onChange={(e) => setRow(i, { hint: e.target.value })}
+            placeholder="채점 힌트 (선택)"
+            className="input !min-h-9 min-w-40 flex-1 !py-1.5 text-xs"
+          />
+          <button
+            onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
+            className="link-quiet !text-danger/70 hover:!text-danger"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <div className="flex flex-wrap items-center gap-3 pt-1">
+        <button
+          onClick={() => setRows((rs) => [...rs, { criterion: "", weight: 10, hint: "" }])}
+          className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs"
+        >
+          ＋ 기준 추가
+        </button>
+        <span className={`text-sm font-bold ${sum === 100 ? "text-fg" : "text-danger"}`}>합계 {sum}/100</span>
+        <span className="ml-auto flex gap-2">
+          {isCustom && (
+            <button onClick={onReset} disabled={busy} className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs">
+              기본값 복원
+            </button>
+          )}
+          <button
+            onClick={() => onSave(rows.map((r) => ({ criterion: r.criterion.trim(), weight: Number(r.weight), hint: r.hint.trim() || undefined })))}
+            disabled={busy || !valid}
+            className="btn btn-primary !min-h-8 !px-4 !py-1 text-xs"
+          >
+            기준 저장
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// 시안의 실제 프롬프트 열람 + 수정 재생성
+function PromptView({ prompt, busy, onRegen }: { prompt: string; busy: boolean; onRegen: (p: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(prompt);
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="link-quiet mt-2 text-xs">프롬프트 보기 ▾</button>
+    );
+  }
+  return (
+    <div className="mt-2 space-y-2">
+      <button onClick={() => { setOpen(false); setEditing(false); }} className="link-quiet text-xs">프롬프트 접기 ▴</button>
+      {editing ? (
+        <>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={6}
+            className="textarea w-full font-mono text-xs"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setEditing(false); onRegen(draft.trim()); }}
+              disabled={busy || !draft.trim()}
+              className="btn btn-primary !min-h-8 !px-3 !py-1 text-xs"
+            >
+              이 프롬프트로 재생성
+            </button>
+            <button onClick={() => { setEditing(false); setDraft(prompt); }} className="link-quiet text-xs">취소</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="max-h-40 overflow-auto rounded-(--radius-xs) bg-base/40 px-3 py-2 font-mono text-xs leading-relaxed text-fg2">
+            {prompt}
+          </p>
+          <button onClick={() => { setDraft(prompt); setEditing(true); }} disabled={busy} className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs">
+            ✏️ 수정해서 재생성
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// SVG 컬러 치환 — API 호출 없이 즉시 미리보기, 저장 시 새 버전 생성
+function SvgColorEditor({
+  original,
+  busy,
+  onSave,
+}: {
+  original: string;
+  busy: boolean;
+  onSave: (svg: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [edited, setEdited] = useState(original);
+  const colors = useMemo(
+    () => Array.from(new Set((edited.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).map((c) => c.toLowerCase()))),
+    [edited]
+  );
+  const changed = edited !== original;
+  // <input type="color">는 #rrggbb만 지원 — 3자리 확장, 8자리 절삭
+  const norm = (hex: string) => {
+    const h = hex.slice(1);
+    if (h.length === 3) return `#${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`;
+    if (h.length >= 6) return `#${h.slice(0, 6)}`;
+    return "#000000";
+  };
+  const replace = (from: string, to: string) =>
+    setEdited((s) => s.replace(new RegExp(from, "gi"), to.toLowerCase()));
+  const dataUri = `data:image/svg+xml;base64,${typeof window !== "undefined" ? btoa(unescape(encodeURIComponent(edited))) : ""}`;
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="link-quiet mt-2 text-xs">🎨 컬러 편집 ▾</button>
+    );
+  }
+  return (
+    <div className="mt-3 space-y-2 border-t border-line pt-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-fg">컬러 편집 — 색을 고르면 즉시 미리보기됩니다</span>
+        <button onClick={() => { setOpen(false); setEdited(original); }} className="link-quiet text-xs">접기 ▴</button>
+      </div>
+      {changed && (
+        <div className="grid grid-cols-2 gap-2">
+          <div className="flex items-center justify-center rounded-(--radius-xs) bg-white p-4">
+            <img src={dataUri} alt="미리보기 라이트" className="max-h-24 w-full object-contain" />
+          </div>
+          <div className="flex items-center justify-center rounded-(--radius-xs) bg-black p-4">
+            <img src={dataUri} alt="미리보기 다크" className="max-h-24 w-full object-contain" />
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {colors.map((c) => (
+          <label key={c} className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-2 py-1">
+            <input
+              type="color"
+              defaultValue={norm(c)}
+              onChange={(e) => replace(c, e.target.value)}
+              className="h-5 w-5 cursor-pointer border-0 bg-transparent p-0"
+              aria-label={`${c} 변경`}
+            />
+            <span className="font-mono text-xs text-fg2">{c}</span>
+          </label>
+        ))}
+        {colors.length === 0 && <span className="text-xs text-fg2/50">치환 가능한 HEX 색상이 없습니다.</span>}
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => onSave(edited)}
+          disabled={busy || !changed}
+          className="btn btn-primary !min-h-8 !px-3 !py-1 text-xs"
+        >
+          새 버전으로 저장
+        </button>
+        <button onClick={() => setEdited(original)} disabled={!changed} className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs">
+          되돌리기
+        </button>
+      </div>
+    </div>
   );
 }
 

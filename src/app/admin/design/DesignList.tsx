@@ -126,6 +126,7 @@ function Stepper({ i }: { i: Item }) {
 export default function DesignList() {
   const [items, setItems] = useState<Item[] | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [cleanMsg, setCleanMsg] = useState("");
 
   const load = () =>
     fetch("/api/admin/pipeline").then(async (r) => {
@@ -206,6 +207,26 @@ export default function DesignList() {
           })}
         </ul>
       )}
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={async () => {
+            if (!confirm("어디에서도 참조되지 않는 스토리지 파일을 정리할까요? (최근 30분 내 생성 파일은 보호됩니다)")) return;
+            setCleanMsg("⏳ 정리 중…");
+            try {
+              const r = await fetch("/api/admin/maintenance", { method: "POST" });
+              const d = await r.json().catch(() => ({}));
+              setCleanMsg(r.ok ? `✓ ${d.removed}개 파일 정리 (${d.freed_mb}MB 확보, 전체 ${d.scanned}개 스캔)` : `⚠️ ${d.error ?? "정리 실패"}`);
+            } catch {
+              setCleanMsg("⚠️ 정리 중 오류가 발생했습니다.");
+            }
+          }}
+          className="link-quiet text-xs"
+        >
+          🧹 스토리지 정리
+        </button>
+        {cleanMsg && <span className="text-xs text-fg2">{cleanMsg}</span>}
+      </div>
     </div>
   );
 }

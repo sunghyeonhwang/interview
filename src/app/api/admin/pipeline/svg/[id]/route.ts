@@ -18,6 +18,31 @@ export async function GET(_req: NextRequest, { params }: Params) {
   });
 }
 
+// 컬러 치환 등 수정본을 새 버전으로 저장 (원본 보존)
+export async function PATCH(req: NextRequest, { params }: Params) {
+  if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
+  const { id } = await params;
+  const { svg } = (await req.json().catch(() => ({}))) as { svg?: string };
+  if (!svg?.trim() || !/<svg[\s\S]*<\/svg>/i.test(svg)) {
+    return NextResponse.json({ error: "유효한 SVG 코드가 필요합니다." }, { status: 400 });
+  }
+  const client = db();
+  const { data: base } = await client.from("iv_svgs").select("concept_id").eq("id", id).single();
+  if (!base) return NextResponse.json({ error: "SVG를 찾을 수 없습니다." }, { status: 404 });
+
+  const { count } = await client
+    .from("iv_svgs")
+    .select("id", { count: "exact", head: true })
+    .eq("concept_id", base.concept_id);
+  const { data, error } = await client
+    .from("iv_svgs")
+    .insert({ concept_id: base.concept_id, svg: svg.trim(), version: (count ?? 0) + 1 })
+    .select()
+    .single();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ svg: data });
+}
+
 export async function DELETE(_req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const { id } = await params;

@@ -34,11 +34,16 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   if (brief) {
     const { data: concepts } = await client
       .from("iv_concepts")
-      .select("image_light_path, image_dark_path")
+      .select("id, image_light_path, image_dark_path")
       .eq("brief_id", brief.id);
     for (const c of concepts ?? []) {
       if (c.image_light_path) removals.push(c.image_light_path);
       if (c.image_dark_path) removals.push(c.image_dark_path);
+    }
+    const conceptIds = (concepts ?? []).map((c) => c.id);
+    if (conceptIds.length) {
+      const { data: mockups } = await client.from("iv_mockups").select("image_path").in("concept_id", conceptIds);
+      for (const m of mockups ?? []) if (m.image_path) removals.push(m.image_path);
     }
   }
   if (removals.length) await client.storage.from("iv-concepts").remove(removals);
