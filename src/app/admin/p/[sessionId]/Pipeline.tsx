@@ -62,6 +62,14 @@ interface State {
 }
 
 type Tab = "brief" | "refs" | "concepts" | "eval" | "svg";
+
+const engineLabel = (e: string) => (e === "openai" ? "GPT" : "Gemini");
+
+interface GenOptions {
+  logo_type: string;
+  color_hint: string;
+  extra: string;
+}
 const TABS: { key: Tab; label: string }[] = [
   { key: "brief", label: "1. 브리프" },
   { key: "refs", label: "2. 레퍼런스" },
@@ -75,6 +83,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const [tab, setTab] = useState<Tab>("brief");
   const [busy, setBusy] = useState<string | null>(null); // 진행 중 작업 라벨
   const [error, setError] = useState("");
+  const [genOpts, setGenOpts] = useState<GenOptions>({ logo_type: "", color_hint: "", extra: "" });
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/admin/pipeline/${sessionId}`);
@@ -111,12 +120,45 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const directions = brief?.content.directions ?? [];
   const selectedConcepts = concepts.filter((c) => c.selected);
   const latestEval = (conceptId: string) => evaluations.find((e) => e.concept_id === conceptId);
+  const svgsOf = (conceptId: string) => svgs.filter((s) => s.concept_id === conceptId);
+
+  // 미평가 시안 일괄 평가 (순차 실행)
+  async function evaluateAll() {
+    const targets = concepts.filter((c) => !latestEval(c.id));
+    if (!targets.length) return;
+    setError("");
+    for (let i = 0; i < targets.length; i++) {
+      setBusy(`모두 평가 (${i + 1}/${targets.length})`);
+      try {
+        const res = await fetch(`/api/admin/pipeline/evaluate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ concept_id: targets[i].id }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          setError(`${i + 1}번째 평가 실패: ${d.error ?? "오류"}`);
+        }
+      } catch {
+        setError(`${i + 1}번째 평가 중 오류`);
+      }
+      await load();
+    }
+    setBusy(null);
+  }
 
   return (
     <div className="section-enter space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link href={`/admin/s/${sessionId}`} className="link-quiet">← 응답 보기</Link>
-        {busy && <span className="badge badge-progress">{busy} 진행 중… (최대 2~3분)</span>}
+        <span className="flex items-center gap-3">
+          {busy && <span className="badge badge-progress">⏳ {busy} 진행 중… (최대 2~3분)</span>}
+          {(svgs.length > 0 || concepts.length > 0) && (
+            <a href={`/api/admin/pipeline/${sessionId}/export`} className="btn btn-ghost !min-h-8 !px-4 !py-1 text-xs">
+              📦 결과 내보내기 (ZIP)
+            </a>
+          )}
+        </span>
       </div>
 
       <div>
@@ -258,11 +300,9 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {references.map((r) => (
                   <div key={r.id} className={`card !p-4 ${r.selected ? "!border-inv" : ""}`}>
-                    {r.image_url && (
-                      <a href={r.url ?? "#"} target="_blank" rel="noreferrer">
-                        <img src={r.image_url} alt={r.brand_name} className="h-36 w-full rounded-(--radius-xs) bg-white object-cover" loading="lazy" />
-                      </a>
-                    )}
+                    <a href={r.url ?? "#"} target="_blank" rel="noreferrer">
+                      <RefImage src={r.image_url} name={r.brand_name} />
+                    </a>
                     <div className="mt-3 flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-bold text-fg">{r.brand_name}</p>
@@ -304,27 +344,71 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
             <>
               <div className="card">
                 <h2 className="text-xl text-fg">시안 생성</h2>
-                <p className="mt-1 text-[13px] text-fg2">
-                  선택된 레퍼런스 {references.filter((r) => r.selected).length}개 기반 리디자인 · 라이트/다크 2장 + 제작 의도 포함
+                <p className="mt-1 text-[13px] leading-relaxed text-fg2">
+                  아래 행은 브리프의 <strong className="text-fg">디자인 방향</strong>입니다. 선택한 레퍼런스{" "}
+                  <strong className="text-fg">{references.filter((r) => r.selected).length}개는 모두</strong> 각 생성에 반영되며,
+                  같은 방향을 다시 생성하면 이전 시안과 <strong className="text-fg">다른 조형 접근</strong>으로 만들어집니다.
                 </p>
+
+                {/* 생성 옵션 */}
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <select
+                    value={genOpts.logo_type}
+                    onChange={(e) => setGenOpts((o) => ({ ...o, logo_type: e.target.value }))}
+                    className="select"
+                    aria-label="로고 유형"
+                  >
+                    <option value="">로고 유형 — 자동</option>
+                    <option value="심볼 마크">심볼 마크 중심</option>
+                    <option value="워드마크(로고타입)">워드마크 중심</option>
+                    <option value="심볼+워드마크 콤비네이션">심볼+워드마크 콤비</option>
+                    <option value="엠블럼/배지형">엠블럼·배지형</option>
+                    <option value="이니셜/모노그램">이니셜·모노그램</option>
+                  </select>
+                  <input
+                    value={genOpts.color_hint}
+                    onChange={(e) => setGenOpts((o) => ({ ...o, color_hint: e.target.value }))}
+                    placeholder="컬러 지시 — 예: 딥그린+아이보리, #1B4D3E 계열"
+                    className="input"
+                  />
+                  <input
+                    value={genOpts.extra}
+                    onChange={(e) => setGenOpts((o) => ({ ...o, extra: e.target.value }))}
+                    placeholder="추가 요청 — 예: 곡선 위주, 한글 포함"
+                    className="input"
+                  />
+                </div>
+
                 <div className="mt-4 space-y-2">
                   {directions.map((d) => (
                     <div key={d.name} className="flex flex-wrap items-center gap-2">
                       <span className="min-w-32 text-sm font-semibold text-fg">{d.name}</span>
-                      {engines.map((e) => (
-                        <button
-                          key={e}
-                          onClick={() => run(`${d.name} 시안 (${e})`, () => fetch(`/api/admin/pipeline/${sessionId}/concepts`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ direction: d.name, engine: e }),
-                          }))}
-                          disabled={!!busy}
-                          className="btn btn-ghost !min-h-9 !py-1.5 text-xs"
-                        >
-                          {e === "openai" ? "🎨 GPT로 생성" : "🎨 Gemini로 생성"}
-                        </button>
-                      ))}
+                      {engines.map((e) => {
+                        const label = `${d.name} 시안 (${engineLabel(e)})`;
+                        const running = busy === label;
+                        return (
+                          <button
+                            key={e}
+                            onClick={() => run(label, () => fetch(`/api/admin/pipeline/${sessionId}/concepts`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                direction: d.name,
+                                engine: e,
+                                options: {
+                                  logo_type: genOpts.logo_type || undefined,
+                                  color_hint: genOpts.color_hint || undefined,
+                                  extra: genOpts.extra || undefined,
+                                },
+                              }),
+                            }))}
+                            disabled={!!busy}
+                            className={`btn !min-h-9 !py-1.5 text-xs ${running ? "btn-primary" : "btn-ghost"}`}
+                          >
+                            {running ? "⏳ 생성 중…" : `🎨 ${engineLabel(e)}로 생성`}
+                          </button>
+                        );
+                      })}
                     </div>
                   ))}
                 </div>
@@ -340,7 +424,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <span className="badge badge-pending">{c.direction}</span>
-                      <span className="badge badge-pending">{c.engine} v{c.version}</span>
+                      <span className="badge badge-pending">{engineLabel(c.engine)} {c.version}차</span>
                       {(c.palette ?? []).map((hex) => (
                         <span key={hex} title={hex} className="inline-block h-5 w-5 rounded-full border border-line" style={{ background: hex }} />
                       ))}
@@ -385,10 +469,21 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           ) : (
             <>
               <div className="card">
-                <h2 className="text-xl text-fg">AI 평가</h2>
-                <p className="mt-1 text-[13px] text-fg2">
-                  독립 리뷰 보드 관점으로 시안을 채점합니다 — 전략 적합성(25) · 고객 신뢰(20) · 차별성(15) · 확장성(15) · 가독성(15) · 리스크(10). 결과는 저장되어 비교됩니다.
-                </p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl text-fg">AI 평가</h2>
+                    <p className="mt-1 text-[13px] text-fg2">
+                      독립 리뷰 보드 관점으로 채점 — 전략 적합성(25) · 고객 신뢰(20) · 차별성(15) · 확장성(15) · 가독성(15) · 리스크(10)
+                    </p>
+                  </div>
+                  <button
+                    onClick={evaluateAll}
+                    disabled={!!busy || !state.claudeReady || concepts.every((c) => !!latestEval(c.id))}
+                    className="btn btn-primary shrink-0"
+                  >
+                    {busy?.startsWith("모두 평가") ? `⏳ ${busy}` : `▶ 모두 평가하기 (미평가 ${concepts.filter((c) => !latestEval(c.id)).length}개)`}
+                  </button>
+                </div>
               </div>
 
               {/* 랭킹 (평가된 시안만, 총점순) */}
@@ -403,8 +498,18 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       .map(({ c, e }, i) => (
                         <div key={c.id} className="flex items-center gap-3 rounded-(--radius-xs) bg-base/40 px-3 py-2 text-sm">
                           <span className="w-6 font-bold text-inv">{i + 1}</span>
-                          <span className="min-w-0 flex-1 truncate text-fg">{c.direction} · {c.engine} v{c.version}</span>
+                          <span className="min-w-0 flex-1 truncate text-fg">{c.direction} · {engineLabel(c.engine)} {c.version}차</span>
                           <span className="font-bold text-fg">{e!.total}점</span>
+                          {svgsOf(c.id).length > 0 ? (
+                            <a
+                              href={`/api/admin/pipeline/svg/${svgsOf(c.id)[svgsOf(c.id).length - 1].id}`}
+                              className="btn btn-ghost !min-h-7 !px-3 !py-0.5 text-xs"
+                            >
+                              ⬇ SVG
+                            </a>
+                          ) : (
+                            <span className="text-xs text-fg2/40">SVG 없음</span>
+                          )}
                         </div>
                       ))}
                   </div>
@@ -419,7 +524,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       <div className="flex items-start gap-3">
                         <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=light`} alt="" className="h-20 w-20 shrink-0 rounded-(--radius-xs) bg-white object-cover" loading="lazy" />
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold text-fg">{c.direction} · {c.engine} v{c.version}</p>
+                          <p className="text-sm font-bold text-fg">{c.direction} · {engineLabel(c.engine)} {c.version}차</p>
                           {ev ? (
                             <p className="mt-0.5 text-2xl font-bold text-inv">{ev.total}<span className="text-sm text-fg2"> / 100</span></p>
                           ) : (
@@ -505,7 +610,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       disabled={!!busy || !state.claudeReady}
                       className="btn btn-primary !min-h-9 !py-1.5 text-xs"
                     >
-                      ⬡ {c.direction} · {c.engine} v{c.version} → SVG
+                      ⬡ {c.direction} · {engineLabel(c.engine)} {c.version}차 → SVG
                     </button>
                   ))}
                 </div>
@@ -547,6 +652,28 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         </section>
       )}
     </div>
+  );
+}
+
+// 외부 CDN 이미지: 리퍼러 차단 대응 + 로드 실패 시 브랜드명 이니셜 플레이스홀더
+function RefImage({ src, name }: { src: string | null; name: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return (
+      <div className="flex h-36 w-full items-center justify-center rounded-(--radius-xs) border border-line bg-base/40">
+        <span className="text-2xl font-bold text-fg2/40">{name.slice(0, 2)}</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={name}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      className="h-36 w-full rounded-(--radius-xs) bg-white object-cover"
+      loading="lazy"
+    />
   );
 }
 

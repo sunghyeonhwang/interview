@@ -113,25 +113,35 @@ export async function generateImage(engine: ImageEngine, prompt: string): Promis
   if (engine === "openai") {
     if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY가 설정되지 않았습니다.");
     const client = new OpenAI();
-    const res = await client.images.generate({
-      model: "gpt-image-1",
-      prompt,
-      size: "1024x1024",
-      quality: "medium",
-    });
-    const b64 = res.data?.[0]?.b64_json;
-    if (!b64) throw new Error("OpenAI 이미지 생성 결과가 비어 있습니다.");
-    return Buffer.from(b64, "base64");
+    try {
+      const res = await client.images.generate({
+        model: "gpt-image-1",
+        prompt,
+        size: "1024x1024",
+        quality: "medium",
+      });
+      const b64 = res.data?.[0]?.b64_json;
+      if (!b64) throw new Error("OpenAI 이미지 생성 결과가 비어 있습니다.");
+      return Buffer.from(b64, "base64");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`OpenAI 이미지 생성 실패: ${msg.slice(0, 200)}`);
+    }
   }
 
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY가 설정되지 않았습니다.");
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const res = await ai.models.generateContent({
-    model: "gemini-2.5-flash-image",
-    contents: prompt,
-  });
-  for (const part of res.candidates?.[0]?.content?.parts ?? []) {
-    if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+  try {
+    const res = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image",
+      contents: prompt,
+    });
+    for (const part of res.candidates?.[0]?.content?.parts ?? []) {
+      if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+    }
+    throw new Error("결과가 비어 있습니다 (정책 거부일 수 있음).");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Gemini 이미지 생성 실패: ${msg.slice(0, 200)}`);
   }
-  throw new Error("Gemini 이미지 생성 결과가 비어 있습니다 (정책 거부일 수 있음).");
 }

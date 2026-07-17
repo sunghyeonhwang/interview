@@ -26,10 +26,11 @@ const COMPOSE_SCHEMA = {
 export async function POST(req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const { sessionId } = await params;
-  const { direction, engine, prompt_override } = (await req.json().catch(() => ({}))) as {
+  const { direction, engine, prompt_override, options } = (await req.json().catch(() => ({}))) as {
     direction?: string;
     engine?: ImageEngine;
     prompt_override?: string;
+    options?: { logo_type?: string; color_hint?: string; extra?: string };
   };
   if (!direction || !engine) {
     return NextResponse.json({ error: "direction과 engine이 필요합니다." }, { status: 400 });
@@ -56,15 +57,33 @@ export async function POST(req: NextRequest, { params }: Params) {
     (d: { name: string }) => d.name === direction
   );
 
+  // 이전 시안 프롬프트 수집 — 반복 생성 시 유사 시안 방지 (다양성 강제)
+  const { data: priorConcepts } = await client
+    .from("iv_concepts")
+    .select("prompt")
+    .eq("brief_id", brief.id)
+    .eq("direction", direction)
+    .order("created_at", { ascending: false })
+    .limit(6);
+  const priorPrompts = (priorConcepts ?? []).map((p) => p.prompt).filter(Boolean);
+
   // 1) 프롬프트 + 제작 의도 구성
   let composed: { image_prompt: string; rationale: string; palette: string[] };
   if (prompt_override) {
     composed = { image_prompt: prompt_override, rationale: "(수동 프롬프트)", palette: [] };
   } else {
+    const optionLines = [
+      options?.logo_type && `- 로고 유형: ${options.logo_type} 중심으로 구성할 것`,
+      options?.color_hint && `- 컬러 지시: ${options.color_hint} — 팔레트에 반드시 반영할 것`,
+      options?.extra && `- 추가 요청: ${options.extra}`,
+    ].filter(Boolean);
+
     const text = await claudeCall({
       system: `너는 브랜드 아이덴티티 아트 디렉터다. 브리프와 선택된 벤치마크 레퍼런스를 바탕으로,
 선택 레퍼런스의 좋은 점을 이 브랜드에 맞게 "리디자인"한 로고 컨셉 시안의 이미지 생성 프롬프트를 만든다.
-레퍼런스를 베끼지 말고 원리(구성·무드·조형 언어)만 가져온다. 텍스트가 들어간다면 브랜드명만, 오탈자 없이 단순하게.`,
+규칙:
+- 레퍼런스를 베끼지 말고 원리(구성·무드·조형 언어)만 가져온다. 텍스트가 들어간다면 브랜드명만, 오탈자 없이 단순하게.
+- "이미 시도한 접근" 목록이 있으면, 그것들과 조형적으로 뚜렷이 다른 새로운 접근(다른 심볼 모티프, 다른 구성, 다른 무드)을 제안한다. 색만 바꾼 변형은 금지.`,
       prompt: `## 브리프
 포지셔닝: ${brief.content?.positioning}
 키워드: ${(brief.content?.keywords ?? []).join(", ")}
@@ -75,10 +94,12 @@ ${dir ? `${dir.name} — ${dir.concept} (무드: ${(dir.mood ?? []).join(", ")})
 
 ## 선택된 레퍼런스 (${selectedRefs.length}개)
 ${selectedRefs.map((r) => `- ${r.brand_name}: ${r.summary}${r.note ? ` / 관리자 메모: ${r.note}` : ""}`).join("\n")}
+${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.join("\n")}` : ""}
+${priorPrompts.length ? `\n## 이미 시도한 접근 (이것들과 다르게)\n${priorPrompts.map((p, i) => `${i + 1}. ${p.slice(0, 160)}`).join("\n")}` : ""}
 
 위 재료로 로고 컨셉 시안의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
       schema: COMPOSE_SCHEMA,
-    effort: "medium",
+      effort: "medium",
     });
     composed = extractJSON(text);
   }
