@@ -15,13 +15,14 @@ export async function GET() {
 
   const sessionIds = (sessions ?? []).map((s) => s.id);
   const { data: briefs } = sessionIds.length
-    ? await client.from("iv_briefs").select("id, session_id, updated_at").in("session_id", sessionIds)
+    ? await client.from("iv_briefs").select("id, session_id, updated_at, current_round").in("session_id", sessionIds)
     : { data: [] };
 
   const briefIds = (briefs ?? []).map((b) => b.id);
   const refCounts: Record<string, number> = {};
   const conceptCounts: Record<string, number> = {};
   const svgCounts: Record<string, number> = {};
+  const evalCounts: Record<string, number> = {};
   if (briefIds.length) {
     const [refs, concepts] = await Promise.all([
       client.from("iv_references").select("brief_id").in("brief_id", briefIds),
@@ -31,11 +32,21 @@ export async function GET() {
     for (const c of concepts.data ?? []) conceptCounts[c.brief_id] = (conceptCounts[c.brief_id] ?? 0) + 1;
     const conceptIds = (concepts.data ?? []).map((c) => c.id);
     if (conceptIds.length) {
-      const { data: svgs } = await client.from("iv_svgs").select("concept_id").in("concept_id", conceptIds);
       const conceptToBrief = new Map((concepts.data ?? []).map((c) => [c.id, c.brief_id]));
+      const [{ data: svgs }, { data: evals }] = await Promise.all([
+        client.from("iv_svgs").select("concept_id").in("concept_id", conceptIds),
+        client.from("iv_evaluations").select("concept_id").in("concept_id", conceptIds),
+      ]);
       for (const s of svgs ?? []) {
         const bid = conceptToBrief.get(s.concept_id);
         if (bid) svgCounts[bid] = (svgCounts[bid] ?? 0) + 1;
+      }
+      const evaluated = new Set<string>(); // 같은 시안 재평가는 1개로 센다
+      for (const e of evals ?? []) {
+        if (evaluated.has(e.concept_id)) continue;
+        evaluated.add(e.concept_id);
+        const bid = conceptToBrief.get(e.concept_id);
+        if (bid) evalCounts[bid] = (evalCounts[bid] ?? 0) + 1;
       }
     }
   }
@@ -49,8 +60,10 @@ export async function GET() {
       questionnaire_title: (s.iv_questionnaires as unknown as { title: string } | null)?.title ?? "",
       submitted_at: s.submitted_at,
       has_brief: !!brief,
+      current_round: brief?.current_round ?? 1,
       references: brief ? (refCounts[brief.id] ?? 0) : 0,
       concepts: brief ? (conceptCounts[brief.id] ?? 0) : 0,
+      evaluations: brief ? (evalCounts[brief.id] ?? 0) : 0,
       svgs: brief ? (svgCounts[brief.id] ?? 0) : 0,
     };
   });

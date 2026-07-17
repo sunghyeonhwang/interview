@@ -26,13 +26,14 @@ const COMPOSE_SCHEMA = {
 export async function POST(req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const { sessionId } = await params;
-  const { direction, engine, prompt_override, options } = (await req.json().catch(() => ({}))) as {
+  const { direction: bodyDirection, engine: bodyEngine, prompt_override, options, variant_of } = (await req.json().catch(() => ({}))) as {
     direction?: string;
     engine?: ImageEngine;
     prompt_override?: string;
     options?: { logo_type?: string; color_hint?: string; extra?: string };
+    variant_of?: string; // 기존 시안 id — 지정 시 해당 시안의 미세 변형을 생성
   };
-  if (!direction || !engine) {
+  if (!variant_of && (!bodyDirection || !bodyEngine)) {
     return NextResponse.json({ error: "direction과 engine이 필요합니다." }, { status: 400 });
   }
   const client = db();
@@ -52,6 +53,24 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (!selectedRefs?.length) {
     return NextResponse.json({ error: "레퍼런스를 1개 이상 선택하세요." }, { status: 400 });
   }
+
+  // 변형 모드: 원본 시안을 로드해 방향·엔진을 물려받는다
+  let variantSource: {
+    id: string; direction: string; engine: string; prompt: string;
+    rationale: string | null; image_light_path: string;
+  } | null = null;
+  if (variant_of) {
+    const { data: src } = await client
+      .from("iv_concepts")
+      .select("id, direction, engine, prompt, rationale, image_light_path")
+      .eq("id", variant_of)
+      .eq("brief_id", brief.id)
+      .maybeSingle();
+    if (!src) return NextResponse.json({ error: "변형할 원본 시안을 찾을 수 없습니다." }, { status: 404 });
+    variantSource = src;
+  }
+  const direction = variantSource ? variantSource.direction : bodyDirection!;
+  const engine = (variantSource ? (bodyEngine ?? variantSource.engine) : bodyEngine) as ImageEngine;
 
   const dir = (brief.content?.directions ?? []).find(
     (d: { name: string }) => d.name === direction
@@ -75,7 +94,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   let baseEvalSummary = "";
   let roundFeedback = "";
   const baseImages: string[] = [];
-  if (round > 1) {
+  if (round > 1 && !variantSource) {
     const { data: prevSelected } = await client
       .from("iv_concepts")
       .select("id, rationale, prompt, image_light_path")
@@ -101,16 +120,37 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // 1) 프롬프트 + 제작 의도 구성
+  const optionLines = [
+    options?.logo_type && `- 로고 유형: ${options.logo_type} 중심으로 구성할 것`,
+    options?.color_hint && `- 컬러 지시: ${options.color_hint} — 팔레트에 반드시 반영할 것`,
+    options?.extra && `- 추가 요청: ${options.extra}`,
+  ].filter(Boolean);
+
   let composed: { image_prompt: string; rationale: string; palette: string[] };
   if (prompt_override) {
     composed = { image_prompt: prompt_override, rationale: "(수동 프롬프트)", palette: [] };
-  } else {
-    const optionLines = [
-      options?.logo_type && `- 로고 유형: ${options.logo_type} 중심으로 구성할 것`,
-      options?.color_hint && `- 컬러 지시: ${options.color_hint} — 팔레트에 반드시 반영할 것`,
-      options?.extra && `- 추가 요청: ${options.extra}`,
-    ].filter(Boolean);
+  } else if (variantSource) {
+    // 변형 모드: 원본 이미지를 보며 핵심은 유지하고 디테일만 달리한다
+    const { data: img } = await client.storage.from("iv-concepts").download(variantSource.image_light_path);
+    const srcImages = img ? [Buffer.from(await img.arrayBuffer()).toString("base64")] : [];
+    const text = await claudeCall({
+      system: `너는 브랜드 아이덴티티 아트 디렉터다. 첨부된 이미지(기준 시안)의 "미세 변형(variation)"을 만든다.
+규칙:
+- 핵심 모티프·구성·무드는 그대로 유지한다. 완전히 새로운 방향 제안 금지.
+- 디테일만 달리한다 — 선 굵기, 비율, 곡률, 세부 형태, 미묘한 톤 조정 중 1~2가지.
+- 텍스트가 들어간다면 브랜드명만, 오탈자 없이 단순하게.`,
+      prompt: `## 기준 시안 (첨부 이미지)
+- 원 이미지 프롬프트: ${variantSource.prompt}
+- 원 제작 의도: ${variantSource.rationale ?? "(없음)"}
+${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.join("\n")}` : ""}
 
+기준 시안의 핵심을 유지한 채 디테일만 달리한 변형의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
+      images: srcImages,
+      schema: COMPOSE_SCHEMA,
+      effort: "medium",
+    });
+    composed = extractJSON(text);
+  } else {
     const refineMode = round > 1 && baseConcept;
     const text = await claudeCall({
       system: refineMode

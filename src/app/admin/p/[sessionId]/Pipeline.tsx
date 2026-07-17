@@ -87,6 +87,8 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const [busy, setBusy] = useState<string | null>(null); // 진행 중 작업 라벨
   const [error, setError] = useState("");
   const [genOpts, setGenOpts] = useState<GenOptions>({ logo_type: "", color_hint: "", extra: "" });
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [showCompare, setShowCompare] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/admin/pipeline/${sessionId}`);
@@ -125,6 +127,14 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const latestEval = (conceptId: string) => evaluations.find((e) => e.concept_id === conceptId);
   const svgsOf = (conceptId: string) => svgs.filter((s) => s.concept_id === conceptId);
 
+  // 예상 API 비용 (추정 단가 — 시안: 구성 $0.05 + 이미지 2장 $0.08, 평가 $0.10, SVG $0.12, 브리프 $0.15)
+  const estCost = (brief ? 0.15 : 0) + concepts.length * 0.13 + evaluations.length * 0.1 + svgs.length * 0.12;
+
+  const toggleCompare = (id: string) =>
+    setCompareIds((ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : ids.length >= 4 ? ids : [...ids, id]
+    );
+
   // 미평가 시안 일괄 평가 (순차 실행)
   async function evaluateAll() {
     const targets = concepts.filter((c) => !latestEval(c.id));
@@ -156,6 +166,14 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         <Link href={`/admin/s/${sessionId}`} className="link-quiet">← 응답 보기</Link>
         <span className="flex items-center gap-3">
           {busy && <span className="badge badge-progress">⏳ {busy} 진행 중… (최대 2~3분)</span>}
+          {estCost > 0 && (
+            <span
+              className="text-xs text-fg2/60"
+              title="추정 단가 — 시안 $0.13(구성+이미지 2장), 평가 $0.10, SVG $0.12, 브리프 $0.15. 삭제된 항목·재생성은 제외된 대략치이며 실제 청구와 다를 수 있습니다."
+            >
+              💰 예상 비용 ≈ ${estCost.toFixed(2)}
+            </span>
+          )}
           {(svgs.length > 0 || concepts.length > 0) && (
             <a href={`/api/admin/pipeline/${sessionId}/export`} className="btn btn-ghost !min-h-8 !px-4 !py-1 text-xs">
               📦 결과 내보내기 (ZIP)
@@ -461,7 +479,26 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       {(c.palette ?? []).map((hex) => (
                         <span key={hex} title={hex} className="inline-block h-5 w-5 rounded-full border border-line" style={{ background: hex }} />
                       ))}
-                      <span className="ml-auto flex gap-2">
+                      <span className="ml-auto flex flex-wrap gap-2">
+                        <button
+                          onClick={() => toggleCompare(c.id)}
+                          className={`btn !min-h-8 !px-3 !py-1 text-xs ${compareIds.includes(c.id) ? "btn-primary" : "btn-ghost"}`}
+                          title="나란히 비교에 추가 (최대 4개)"
+                        >
+                          ⚖ 비교
+                        </button>
+                        <button
+                          onClick={() => run(`변형 생성 (${c.direction})`, () => fetch(`/api/admin/pipeline/${sessionId}/concepts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ variant_of: c.id }),
+                          }))}
+                          disabled={!!busy}
+                          className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs"
+                          title="핵심 조형은 유지하고 디테일만 달리한 변형을 1개 생성합니다"
+                        >
+                          {busy === `변형 생성 (${c.direction})` ? "⏳ 변형 중…" : "🔁 비슷하게 변형"}
+                        </button>
                         <button
                           onClick={() => run("선택", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
                             method: "PATCH",
@@ -587,6 +624,12 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                           >
                             {c.selected ? "✓ 선택됨 → SVG" : "선택"}
                           </button>
+                          <button
+                            onClick={() => toggleCompare(c.id)}
+                            className={`btn !min-h-8 !py-1 text-xs ${compareIds.includes(c.id) ? "btn-primary" : "btn-ghost"}`}
+                          >
+                            ⚖ 비교
+                          </button>
                         </span>
                       </div>
 
@@ -684,6 +727,103 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           )}
         </section>
       )}
+
+      {/* 비교 바 (하단 고정) */}
+      {compareIds.length > 0 && !showCompare && (
+        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
+          <div className="card flex items-center gap-3 !px-4 !py-2 shadow-2xl">
+            <span className="whitespace-nowrap text-sm text-fg">⚖ 비교 {compareIds.length}/4</span>
+            <button
+              onClick={() => setShowCompare(true)}
+              disabled={compareIds.length < 2}
+              className="btn btn-primary !min-h-8 !px-4 !py-1 text-xs"
+            >
+              나란히 비교
+            </button>
+            <button onClick={() => setCompareIds([])} className="link-quiet text-xs">비우기</button>
+          </div>
+        </div>
+      )}
+
+      {/* 비교 뷰 오버레이 */}
+      {showCompare && (
+        <CompareView
+          concepts={concepts.filter((c) => compareIds.includes(c.id))}
+          latestEval={latestEval}
+          onClose={() => setShowCompare(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// 시안 나란히 비교 — 라이트/다크·팔레트·평가·제작의도를 한 화면에서
+function CompareView({
+  concepts,
+  latestEval,
+  onClose,
+}: {
+  concepts: Concept[];
+  latestEval: (id: string) => Evaluation | undefined;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div
+        className="card max-h-[92vh] w-full max-w-6xl overflow-auto"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label="시안 비교"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl text-fg">시안 비교</h2>
+          <button onClick={onClose} className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs">✕ 닫기</button>
+        </div>
+        <div
+          className="mt-4 grid gap-5"
+          style={{ gridTemplateColumns: `repeat(${concepts.length}, minmax(200px, 1fr))` }}
+        >
+          {concepts.map((c) => {
+            const ev = latestEval(c.id);
+            return (
+              <div key={c.id} className="min-w-0">
+                <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=light`} alt={`${c.direction} 라이트`} className="w-full rounded-(--radius-xs) bg-white" />
+                <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=dark`} alt={`${c.direction} 다크`} className="mt-2 w-full rounded-(--radius-xs) bg-black" />
+                <p className="mt-2 text-sm font-bold text-fg">{c.direction}</p>
+                <p className="text-xs text-fg2">
+                  {c.round}회차 · {engineLabel(c.engine)} #{c.version}{c.selected ? " · ✓ SVG 대상" : ""}
+                </p>
+                <div className="mt-1.5 flex gap-1">
+                  {(c.palette ?? []).map((hex) => (
+                    <span key={hex} title={hex} className="inline-block h-4 w-4 rounded-full border border-line" style={{ background: hex }} />
+                  ))}
+                </div>
+                {ev ? (
+                  <>
+                    <p className="mt-2 text-xl font-bold text-inv">{ev.total}<span className="text-xs text-fg2"> / 100</span></p>
+                    <div className="mt-1.5 space-y-1">
+                      {ev.scores.map((s) => (
+                        <div key={s.criterion} className="flex items-center gap-2 text-xs">
+                          <span className="w-16 shrink-0 truncate text-fg2" title={s.criterion}>{s.criterion}</span>
+                          <div className="h-1 min-w-8 flex-1 overflow-hidden rounded-full bg-fg2/10">
+                            <div className="h-full rounded-full bg-inv" style={{ width: `${s.score * 10}%` }} />
+                          </div>
+                          <span className="w-5 shrink-0 text-right font-semibold text-fg">{s.score}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-2 text-xs text-fg2/50">아직 평가 없음</p>
+                )}
+                {c.rationale && (
+                  <p className="mt-2 text-xs leading-relaxed text-fg2">{c.rationale}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
