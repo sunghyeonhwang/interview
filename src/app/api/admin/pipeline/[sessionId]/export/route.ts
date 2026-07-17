@@ -66,6 +66,11 @@ export async function GET(_req: NextRequest, { params }: Params) {
   for (const r of refs ?? []) {
     md.push(`- **${r.brand_name}** — ${r.summary ?? ""}${r.note ? ` _(메모: ${r.note})_` : ""}${r.url ? ` [링크](${r.url})` : ""}`);
   }
+  const feedbacks = (brief.round_feedback ?? []) as { round: number; feedback: string }[];
+  if (feedbacks.length) {
+    md.push(``, `## 회차 피드백`, ``);
+    for (const f of feedbacks) md.push(`- ${f.round}회차 → ${f.round + 1}회차: ${f.feedback}`);
+  }
   md.push(``, `## 3. 시안과 평가`, ``);
 
   const ranked = (concepts ?? [])
@@ -73,7 +78,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     .sort((a, b) => (b.e?.total ?? -1) - (a.e?.total ?? -1));
 
   ranked.forEach(({ c, e }, i) => {
-    md.push(`### ${i + 1}위 — ${c.direction} (${engineLabel(c.engine)} ${c.version}차)${c.selected ? " ✅ 선정" : ""}`, ``);
+    md.push(`### ${i + 1}위 — ${c.direction} (${c.round ?? 1}회차 · ${engineLabel(c.engine)} #${c.version})${c.selected ? " ✅ 선정" : ""}`, ``);
     if (c.rationale) md.push(`**제작 의도**: ${c.rationale}`, ``);
     if (c.palette?.length) md.push(`**팔레트**: ${c.palette.join(", ")}`, ``);
     if (e) {

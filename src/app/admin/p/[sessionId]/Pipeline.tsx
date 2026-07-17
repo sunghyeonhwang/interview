@@ -14,6 +14,8 @@ interface Brief {
   id: string;
   content: { positioning: string; keywords: string[]; anti: string[]; directions: Direction[] };
   status: string;
+  current_round: number;
+  round_feedback: { round: number; feedback: string }[];
 }
 interface Reference {
   id: string;
@@ -29,6 +31,7 @@ interface Concept {
   id: string;
   direction: string;
   engine: string;
+  round: number;
   version: number;
   prompt: string;
   rationale: string | null;
@@ -342,6 +345,36 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
             <p className="text-sm text-fg2">레퍼런스를 1개 이상 선택하세요.</p>
           ) : (
             <>
+              {/* 회차 관리 */}
+              <div className="card !py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <span className="badge badge-done">🔄 {brief?.current_round ?? 1}회차 진행 중</span>
+                    {(brief?.round_feedback?.length ?? 0) > 0 && (
+                      <span className="ml-2 text-xs text-fg2">
+                        직전 피드백: {brief!.round_feedback[brief!.round_feedback.length - 1].feedback.slice(0, 60)}
+                      </span>
+                    )}
+                  </div>
+                  <NextRound
+                    disabled={!!busy || !concepts.some((c) => c.round === (brief?.current_round ?? 1) && c.selected)}
+                    hint={
+                      concepts.some((c) => c.round === (brief?.current_round ?? 1) && c.selected)
+                        ? ""
+                        : "이번 회차 시안을 선택하면 다음 회차를 시작할 수 있습니다"
+                    }
+                    onStart={(fb) => run("다음 회차 시작", () => fetch(`/api/admin/pipeline/${sessionId}/round`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ feedback: fb }),
+                    }))}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-fg2/60">
+                  다음 회차부터는 이전 회차에서 <strong className="text-fg2">선택한 시안을 기반으로 발전·정제</strong>됩니다 (피드백 최우선 반영).
+                </p>
+              </div>
+
               <div className="card">
                 <h2 className="text-xl text-fg">시안 생성</h2>
                 <p className="mt-1 text-[13px] leading-relaxed text-fg2">
@@ -424,7 +457,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <span className="badge badge-pending">{c.direction}</span>
-                      <span className="badge badge-pending">{engineLabel(c.engine)} {c.version}차</span>
+                      <span className="badge badge-pending">{c.round}회차 · {engineLabel(c.engine)} #{c.version}</span>
                       {(c.palette ?? []).map((hex) => (
                         <span key={hex} title={hex} className="inline-block h-5 w-5 rounded-full border border-line" style={{ background: hex }} />
                       ))}
@@ -498,7 +531,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       .map(({ c, e }, i) => (
                         <div key={c.id} className="flex items-center gap-3 rounded-(--radius-xs) bg-base/40 px-3 py-2 text-sm">
                           <span className="w-6 font-bold text-inv">{i + 1}</span>
-                          <span className="min-w-0 flex-1 truncate text-fg">{c.direction} · {engineLabel(c.engine)} {c.version}차</span>
+                          <span className="min-w-0 flex-1 truncate text-fg">{c.direction} · {c.round}회차 · {engineLabel(c.engine)} #{c.version}</span>
                           <span className="font-bold text-fg">{e!.total}점</span>
                           {svgsOf(c.id).length > 0 ? (
                             <a
@@ -524,7 +557,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       <div className="flex items-start gap-3">
                         <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=light`} alt="" className="h-20 w-20 shrink-0 rounded-(--radius-xs) bg-white object-cover" loading="lazy" />
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold text-fg">{c.direction} · {engineLabel(c.engine)} {c.version}차</p>
+                          <p className="text-sm font-bold text-fg">{c.direction} · {c.round}회차 · {engineLabel(c.engine)} #{c.version}</p>
                           {ev ? (
                             <p className="mt-0.5 text-2xl font-bold text-inv">{ev.total}<span className="text-sm text-fg2"> / 100</span></p>
                           ) : (
@@ -610,7 +643,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       disabled={!!busy || !state.claudeReady}
                       className="btn btn-primary !min-h-9 !py-1.5 text-xs"
                     >
-                      ⬡ {c.direction} · {engineLabel(c.engine)} {c.version}차 → SVG
+                      ⬡ {c.direction} · {c.round}회차 · {engineLabel(c.engine)} #{c.version} → SVG
                     </button>
                   ))}
                 </div>
@@ -652,6 +685,42 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         </section>
       )}
     </div>
+  );
+}
+
+// 다음 회차 시작 — 피드백 입력 후 실행
+function NextRound({ disabled, hint, onStart }: { disabled: boolean; hint: string; onStart: (feedback: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [fb, setFb] = useState("");
+  if (!open) {
+    return (
+      <span className="flex items-center gap-2">
+        {hint && <span className="text-xs text-fg2/50">{hint}</span>}
+        <button onClick={() => setOpen(true)} disabled={disabled} className="btn btn-ghost !min-h-8 !px-4 !py-1 text-xs">
+          다음 회차 시작 →
+        </button>
+      </span>
+    );
+  }
+  return (
+    <span className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+      <input
+        value={fb}
+        onChange={(e) => setFb(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && fb.trim() && (onStart(fb.trim()), setOpen(false), setFb(""))}
+        placeholder="피드백 — 예: 심볼은 유지, 곡선을 더 부드럽게, 컬러는 딥그린으로"
+        autoFocus
+        className="input min-w-72 flex-1 !py-1.5 text-xs"
+      />
+      <button
+        onClick={() => fb.trim() && (onStart(fb.trim()), setOpen(false), setFb(""))}
+        disabled={!fb.trim()}
+        className="btn btn-primary !min-h-8 !px-4 !py-1 text-xs"
+      >
+        시작
+      </button>
+      <button onClick={() => setOpen(false)} className="link-quiet">취소</button>
+    </span>
   );
 }
 

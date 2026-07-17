@@ -57,15 +57,48 @@ export async function POST(req: NextRequest, { params }: Params) {
     (d: { name: string }) => d.name === direction
   );
 
-  // 이전 시안 프롬프트 수집 — 반복 생성 시 유사 시안 방지 (다양성 강제)
+  const round: number = brief.current_round ?? 1;
+
+  // 이번 회차의 이전 시안 프롬프트 수집 — 반복 생성 시 유사 시안 방지 (다양성 강제)
   const { data: priorConcepts } = await client
     .from("iv_concepts")
     .select("prompt")
     .eq("brief_id", brief.id)
     .eq("direction", direction)
+    .eq("round", round)
     .order("created_at", { ascending: false })
     .limit(6);
   const priorPrompts = (priorConcepts ?? []).map((p) => p.prompt).filter(Boolean);
+
+  // 2회차부터: 이전 회차의 선택 시안(발전 기반) + 그 평가 + 회차 피드백을 물려받는다
+  let baseConcept: { rationale: string | null; prompt: string; image_light_path: string } | null = null;
+  let baseEvalSummary = "";
+  let roundFeedback = "";
+  const baseImages: string[] = [];
+  if (round > 1) {
+    const { data: prevSelected } = await client
+      .from("iv_concepts")
+      .select("id, rationale, prompt, image_light_path")
+      .eq("brief_id", brief.id)
+      .eq("round", round - 1)
+      .eq("selected", true)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    baseConcept = prevSelected?.[0] ?? null;
+    if (baseConcept) {
+      const { data: ev } = await client
+        .from("iv_evaluations")
+        .select("summary")
+        .eq("concept_id", (prevSelected![0] as { id: string }).id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      baseEvalSummary = ev?.[0]?.summary ?? "";
+      const { data: img } = await client.storage.from("iv-concepts").download(baseConcept.image_light_path);
+      if (img) baseImages.push(Buffer.from(await img.arrayBuffer()).toString("base64"));
+    }
+    const fb = (brief.round_feedback ?? []) as { round: number; feedback: string }[];
+    roundFeedback = fb.find((f) => f.round === round - 1)?.feedback ?? "";
+  }
 
   // 1) 프롬프트 + 제작 의도 구성
   let composed: { image_prompt: string; rationale: string; palette: string[] };
@@ -78,8 +111,14 @@ export async function POST(req: NextRequest, { params }: Params) {
       options?.extra && `- 추가 요청: ${options.extra}`,
     ].filter(Boolean);
 
+    const refineMode = round > 1 && baseConcept;
     const text = await claudeCall({
-      system: `너는 브랜드 아이덴티티 아트 디렉터다. 브리프와 선택된 벤치마크 레퍼런스를 바탕으로,
+      system: refineMode
+        ? `너는 브랜드 아이덴티티 아트 디렉터다. 지금은 ${round}회차 — 첨부된 이미지(이전 회차에서 선정된 시안)를 기반으로 "발전·정제"하는 단계다.
+규칙:
+- 선정 시안의 핵심 조형 언어(모티프·구성)는 유지하되, 회차 피드백과 평가 지적을 반영해 개선한다. 완전히 새로운 방향으로 튀지 않는다.
+- 텍스트가 들어간다면 브랜드명만, 오탈자 없이 단순하게.`
+        : `너는 브랜드 아이덴티티 아트 디렉터다. 브리프와 선택된 벤치마크 레퍼런스를 바탕으로,
 선택 레퍼런스의 좋은 점을 이 브랜드에 맞게 "리디자인"한 로고 컨셉 시안의 이미지 생성 프롬프트를 만든다.
 규칙:
 - 레퍼런스를 베끼지 말고 원리(구성·무드·조형 언어)만 가져온다. 텍스트가 들어간다면 브랜드명만, 오탈자 없이 단순하게.
@@ -94,10 +133,19 @@ ${dir ? `${dir.name} — ${dir.concept} (무드: ${(dir.mood ?? []).join(", ")})
 
 ## 선택된 레퍼런스 (${selectedRefs.length}개)
 ${selectedRefs.map((r) => `- ${r.brand_name}: ${r.summary}${r.note ? ` / 관리자 메모: ${r.note}` : ""}`).join("\n")}
+${
+  refineMode
+    ? `\n## 발전 기반 (첨부 이미지 = ${round - 1}회차 선정 시안)
+- 원 제작 의도: ${baseConcept!.rationale ?? "(없음)"}
+${baseEvalSummary ? `- 평가 요약: ${baseEvalSummary}` : ""}
+${roundFeedback ? `- ${round - 1}회차 피드백 (최우선 반영): ${roundFeedback}` : ""}`
+    : ""
+}
 ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.join("\n")}` : ""}
-${priorPrompts.length ? `\n## 이미 시도한 접근 (이것들과 다르게)\n${priorPrompts.map((p, i) => `${i + 1}. ${p.slice(0, 160)}`).join("\n")}` : ""}
+${priorPrompts.length ? `\n## 이번 회차에 이미 시도한 접근 (이것들과 다르게)\n${priorPrompts.map((p, i) => `${i + 1}. ${p.slice(0, 160)}`).join("\n")}` : ""}
 
 위 재료로 로고 컨셉 시안의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
+      images: baseImages,
       schema: COMPOSE_SCHEMA,
       effort: "medium",
     });
@@ -117,11 +165,12 @@ ${priorPrompts.length ? `\n## 이미 시도한 접근 (이것들과 다르게)\n
     .select("id", { count: "exact", head: true })
     .eq("brief_id", brief.id)
     .eq("direction", direction)
-    .eq("engine", engine);
+    .eq("engine", engine)
+    .eq("round", round);
   const version = (count ?? 0) + 1;
   // Storage 키는 ASCII 안전 문자만 허용 — 한글 방향명은 슬러그+랜덤으로 대체
   const slug = direction.replace(/[^a-zA-Z0-9]+/g, "").slice(0, 24) || "dir";
-  const baseKey = `${brief.id}/${slug}-${engine}-v${version}-${crypto.randomUUID().slice(0, 8)}`;
+  const baseKey = `${brief.id}/r${round}-${slug}-${engine}-v${version}-${crypto.randomUUID().slice(0, 8)}`;
   const lightPath = `${baseKey}-light.png`;
   const darkPath = `${baseKey}-dark.png`;
 
@@ -141,6 +190,7 @@ ${priorPrompts.length ? `\n## 이미 시도한 접근 (이것들과 다르게)\n
       brief_id: brief.id,
       direction,
       engine,
+      round,
       version,
       prompt: composed.image_prompt,
       rationale: composed.rationale,
