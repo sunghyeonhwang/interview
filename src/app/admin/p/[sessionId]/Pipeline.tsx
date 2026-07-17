@@ -114,6 +114,12 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const [tab, setTab] = useState<Tab>("brief");
   const [busy, setBusy] = useState<string | null>(null); // 진행 중 작업 라벨
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState(""); // 완료 토스트 (자동 소멸)
+
+  function flashNotice(msg: string) {
+    setNotice(msg);
+    setTimeout(() => setNotice((n) => (n === msg ? "" : n)), 6000);
+  }
   const [genOpts, setGenOpts] = useState<GenOptions>({ logo_type: "", color_hint: "", extra: "" });
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
@@ -139,6 +145,8 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         setError(d.error ?? `${label} 실패`);
+      } else {
+        flashNotice(`✅ ${label} 완료`);
       }
       await load();
     } catch {
@@ -196,6 +204,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
       await load();
     }
     setBusy(null);
+    flashNotice(`✅ 모두 평가 완료 (${targets.length}건)`);
   }
 
   // 전 방향 일괄 서치 (순차): 방향마다 Behance + AI 웹서치 실행, 실패 건은 건너뛰고 요약
@@ -223,6 +232,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     }
     setBusy(null);
     if (fails.length) setError(`서치 실패 ${fails.length}건: ${fails.join(", ")}`);
+    else flashNotice(`✅ 모두 서치 완료 (${jobs.length}건)`);
   }
 
   // 방향×엔진 전 조합 일괄 생성 (순차) — 실패 건은 건너뛰고 요약, 옵션에 따라 자동 평가로 이어감
@@ -255,6 +265,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     }
     setBusy(null);
     if (fails.length) setError(`생성 실패 ${fails.length}건: ${fails.join(", ")}`);
+    else flashNotice(`✅ 모두 생성 완료 (${combos.length}건)`);
     if (autoEval) await evaluateAll();
   }
 
@@ -1069,6 +1080,15 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
             <span className="whitespace-nowrap text-sm font-semibold text-fg">
               ⏳ {busy} 진행 중… (최대 2~3분)
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* 완료 토스트 */}
+      {!busy && notice && (
+        <div className="pointer-events-none fixed top-4 left-1/2 z-50 -translate-x-1/2">
+          <div className="card !rounded-full !px-5 !py-2.5 shadow-2xl">
+            <span className="whitespace-nowrap text-sm font-semibold text-fg">{notice}</span>
           </div>
         </div>
       )}
