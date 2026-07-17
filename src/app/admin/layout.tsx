@@ -3,6 +3,7 @@ import Link from "next/link";
 import { isAdmin } from "@/lib/adminSession";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
+import AdminNav from "./AdminNav";
 import LogoutButton from "./LogoutButton";
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -11,9 +12,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     <div className="flex min-h-screen flex-col">
       <header className="chrome chrome-top sticky top-0 z-20">
         <div className="mx-auto grid max-w-4xl grid-cols-3 items-center px-4 py-3">
-          <Link href="/admin" className="link-quiet justify-self-start text-[13px] font-semibold">
-            관리자
-          </Link>
+          <span className="justify-self-start">
+            <AdminNav />
+          </span>
           <Link href="/admin" aria-label="대시보드로 이동" className="justify-self-center">
             <Logo height={20} />
           </Link>
