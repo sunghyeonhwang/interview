@@ -267,7 +267,6 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           <Link href="/admin/design" className="link-quiet">← 디자인 목록</Link>
         )}
         <span className="flex items-center gap-3">
-          {busy && <span className="badge badge-progress">⏳ {busy} 진행 중… (최대 2~3분)</span>}
           {estCost > 0 && (
             <span
               className="text-xs text-fg2/60"
@@ -1058,6 +1057,21 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           </div>
         );
       })()}
+
+      {/* 진행 상태 플로팅 레이어 — 스크롤과 무관하게 항상 보임 */}
+      {busy && (
+        <div className="pointer-events-none fixed top-4 left-1/2 z-50 -translate-x-1/2">
+          <div className="card flex items-center gap-2.5 !rounded-full !px-5 !py-2.5 shadow-2xl">
+            <span
+              aria-hidden
+              className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-inv border-t-transparent"
+            />
+            <span className="whitespace-nowrap text-sm font-semibold text-fg">
+              ⏳ {busy} 진행 중… (최대 2~3분)
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* 비교 바 (하단 고정) */}
       {compareIds.length > 0 && !showCompare && (
