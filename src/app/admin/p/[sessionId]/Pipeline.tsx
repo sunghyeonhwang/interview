@@ -53,8 +53,17 @@ interface Evaluation {
   summary: string | null;
   created_at: string;
 }
+interface Project {
+  id: string;
+  title: string;
+  brand_name: string;
+  goal: string | null;
+  key_colors: string[];
+  asset_urls: string[];
+}
 interface State {
-  session: { id: string; respondent_name: string; status: string; iv_questionnaires: { title: string } };
+  session: { id: string; respondent_name: string; status: string; iv_questionnaires: { title: string } } | null;
+  project: Project | null;
   brief: Brief | null;
   references: Reference[];
   concepts: Concept[];
@@ -163,7 +172,11 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   return (
     <div className="section-enter space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Link href={`/admin/s/${sessionId}`} className="link-quiet">← 응답 보기</Link>
+        {state.session ? (
+          <Link href={`/admin/s/${sessionId}`} className="link-quiet">← 응답 보기</Link>
+        ) : (
+          <Link href="/admin/design" className="link-quiet">← 디자인 목록</Link>
+        )}
         <span className="flex items-center gap-3">
           {busy && <span className="badge badge-progress">⏳ {busy} 진행 중… (최대 2~3분)</span>}
           {estCost > 0 && (
@@ -185,8 +198,21 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
       <div>
         <h1 className="text-3xl text-fg">디자인 기획 파이프라인</h1>
         <p className="mt-2 text-sm text-fg2">
-          {state.session.iv_questionnaires?.title} · {state.session.respondent_name}
+          {state.session
+            ? `${state.session.iv_questionnaires?.title} · ${state.session.respondent_name}`
+            : `🎨 애셋 프로젝트 — ${state.project?.title} · ${state.project?.brand_name}`}
         </p>
+        {state.project && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {state.project.asset_urls.map((u, i) => (
+              <img key={i} src={u} alt={`원본 애셋 ${i + 1}`} className="h-14 rounded-(--radius-xs) border border-line bg-white p-1" />
+            ))}
+            {state.project.key_colors.map((hex) => (
+              <span key={hex} title={hex} className="inline-block h-6 w-6 rounded-full border border-line" style={{ background: hex }} />
+            ))}
+            {state.project.goal && <span className="text-xs text-fg2">{state.project.goal}</span>}
+          </div>
+        )}
         {!state.claudeReady && (
           <p className="mt-2 text-sm text-danger">⚠️ ANTHROPIC_API_KEY가 설정되지 않아 기획·서치·SVG 기능을 사용할 수 없습니다.</p>
         )}
@@ -222,7 +248,11 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         <section className="space-y-4">
           {!brief ? (
             <div className="card text-center">
-              <p className="text-sm text-fg2">인터뷰 답변을 분석해 포지셔닝·키워드·디자인 방향·서치 쿼리를 생성합니다.</p>
+              <p className="text-sm text-fg2">
+                {state.session
+                  ? "인터뷰 답변을 분석해 포지셔닝·키워드·디자인 방향·서치 쿼리를 생성합니다."
+                  : "업로드한 원본 로고 애셋과 키컬러·목표를 분석해 베리에이션 방향·서치 쿼리를 생성합니다."}
+              </p>
               <button
                 onClick={() => run("브리프 생성", () => fetch(`/api/admin/pipeline/${sessionId}/brief`, { method: "POST" }))}
                 disabled={!!busy || !state.claudeReady}

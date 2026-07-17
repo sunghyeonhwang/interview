@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
+import { ownerFilter } from "@/lib/pipeline";
 
 export const maxDuration = 120;
 
@@ -17,13 +18,16 @@ export async function GET(_req: NextRequest, { params }: Params) {
     .from("iv_sessions")
     .select("respondent_name, iv_questionnaires(title)")
     .eq("id", sessionId)
-    .single();
+    .maybeSingle();
+  const { data: project } = session
+    ? { data: null }
+    : await client.from("iv_projects").select("title, brand_name, goal").eq("id", sessionId).maybeSingle();
   const { data: brief } = await client
     .from("iv_briefs")
     .select("*")
-    .eq("session_id", sessionId)
+    .or(ownerFilter(sessionId))
     .maybeSingle();
-  if (!session || !brief) return NextResponse.json({ error: "브리프가 없습니다." }, { status: 404 });
+  if ((!session && !project) || !brief) return NextResponse.json({ error: "브리프가 없습니다." }, { status: 404 });
 
   const [{ data: refs }, { data: concepts }] = await Promise.all([
     client.from("iv_references").select("*").eq("brief_id", brief.id).eq("selected", true),
@@ -44,11 +48,14 @@ export async function GET(_req: NextRequest, { params }: Params) {
     (evals ?? []).find((e: { concept_id: string }) => e.concept_id === cid);
 
   // ── 보고서.md ──
-  const qTitle = (session.iv_questionnaires as unknown as { title: string } | null)?.title ?? "";
+  const qTitle = (session?.iv_questionnaires as unknown as { title: string } | null)?.title ?? "";
+  const sourceLine = session
+    ? `- 인터뷰: ${qTitle} — ${session.respondent_name}`
+    : `- 프로젝트: ${project!.title} — ${project!.brand_name}${project!.goal ? ` (${project!.goal})` : ""}`;
   const md: string[] = [
     `# 브랜드 디자인 파이프라인 결과`,
     ``,
-    `- 인터뷰: ${qTitle} — ${session.respondent_name}`,
+    sourceLine,
     ``,
     `## 1. 브리프`,
     ``,

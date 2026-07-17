@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
+import { ownerFilter } from "@/lib/pipeline";
 import { extractJSON, geminiSearch } from "@/lib/ai";
 
 export const maxDuration = 300;
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const { data: brief } = await client
     .from("iv_briefs")
     .select("*")
-    .eq("session_id", sessionId)
+    .or(ownerFilter(sessionId))
     .maybeSingle();
   if (!brief) return NextResponse.json({ error: "브리프를 먼저 생성하세요." }, { status: 400 });
 

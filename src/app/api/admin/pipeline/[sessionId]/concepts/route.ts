@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
+import { ownerFilter } from "@/lib/pipeline";
 import { claudeCall, extractJSON, generateImage, type ImageEngine } from "@/lib/ai";
 
 export const maxDuration = 300;
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const { data: brief } = await client
     .from("iv_briefs")
     .select("*")
-    .eq("session_id", sessionId)
+    .or(ownerFilter(sessionId))
     .maybeSingle();
   if (!brief) return NextResponse.json({ error: "브리프를 먼저 생성하세요." }, { status: 400 });
 
@@ -53,6 +54,29 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (!selectedRefs?.length) {
     return NextResponse.json({ error: "레퍼런스를 1개 이상 선택하세요." }, { status: 400 });
   }
+
+  // 애셋 프로젝트: 원본 로고 애셋을 모든 생성의 비전 입력으로 첨부해 아이덴티티를 유지한다
+  let project: { brand_name: string; goal: string | null; key_colors: string[]; asset_paths: string[] } | null = null;
+  const projectImages: string[] = [];
+  if (brief.project_id) {
+    const { data: p } = await client
+      .from("iv_projects")
+      .select("brand_name, goal, key_colors, asset_paths")
+      .eq("id", brief.project_id)
+      .maybeSingle();
+    project = p ?? null;
+    for (const path of (p?.asset_paths ?? []).slice(0, 2)) {
+      const { data: img } = await client.storage.from("iv-concepts").download(path);
+      if (img) projectImages.push(Buffer.from(await img.arrayBuffer()).toString("base64"));
+    }
+  }
+  const projectLines = project
+    ? `\n## 원본 브랜드 애셋 (첨부 이미지의 앞 ${projectImages.length}장 = 원본 로고)
+- 브랜드명: ${project.brand_name}
+- 프로젝트 목표: ${project.goal ?? "(미기재)"}
+- 키컬러(반드시 유지): ${(project.key_colors ?? []).join(", ") || "원본 로고에서 추출해 유지"}
+- 이 작업은 기존 브랜드의 "베리에이션/응용"이다. 원본 로고의 형태 언어와 키컬러를 유지하고, 새 아이덴티티 창작은 금지.`
+    : "";
 
   // 변형 모드: 원본 시안을 로드해 방향·엔진을 물려받는다
   let variantSource: {
@@ -139,13 +163,14 @@ export async function POST(req: NextRequest, { params }: Params) {
 - 핵심 모티프·구성·무드는 그대로 유지한다. 완전히 새로운 방향 제안 금지.
 - 디테일만 달리한다 — 선 굵기, 비율, 곡률, 세부 형태, 미묘한 톤 조정 중 1~2가지.
 - 텍스트가 들어간다면 브랜드명만, 오탈자 없이 단순하게.`,
-      prompt: `## 기준 시안 (첨부 이미지)
+      prompt: `## 기준 시안 (첨부 이미지의 마지막 1장)
 - 원 이미지 프롬프트: ${variantSource.prompt}
 - 원 제작 의도: ${variantSource.rationale ?? "(없음)"}
+${projectLines}
 ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.join("\n")}` : ""}
 
 기준 시안의 핵심을 유지한 채 디테일만 달리한 변형의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
-      images: srcImages,
+      images: [...projectImages, ...srcImages],
       schema: COMPOSE_SCHEMA,
       effort: "medium",
     });
@@ -170,12 +195,13 @@ ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.
 
 ## 선택 방향
 ${dir ? `${dir.name} — ${dir.concept} (무드: ${(dir.mood ?? []).join(", ")})` : direction}
+${projectLines}
 
 ## 선택된 레퍼런스 (${selectedRefs.length}개)
 ${selectedRefs.map((r) => `- ${r.brand_name}: ${r.summary}${r.note ? ` / 관리자 메모: ${r.note}` : ""}`).join("\n")}
 ${
   refineMode
-    ? `\n## 발전 기반 (첨부 이미지 = ${round - 1}회차 선정 시안)
+    ? `\n## 발전 기반 (첨부 이미지의 마지막 1장 = ${round - 1}회차 선정 시안)
 - 원 제작 의도: ${baseConcept!.rationale ?? "(없음)"}
 ${baseEvalSummary ? `- 평가 요약: ${baseEvalSummary}` : ""}
 ${roundFeedback ? `- ${round - 1}회차 피드백 (최우선 반영): ${roundFeedback}` : ""}`
@@ -185,7 +211,7 @@ ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.
 ${priorPrompts.length ? `\n## 이번 회차에 이미 시도한 접근 (이것들과 다르게)\n${priorPrompts.map((p, i) => `${i + 1}. ${p.slice(0, 160)}`).join("\n")}` : ""}
 
 위 재료로 로고 컨셉 시안의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
-      images: baseImages,
+      images: [...projectImages, ...baseImages],
       schema: COMPOSE_SCHEMA,
       effort: "medium",
     });

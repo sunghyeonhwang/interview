@@ -7,15 +7,29 @@ export async function GET() {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const client = db();
 
-  const { data: sessions } = await client
-    .from("iv_sessions")
-    .select("id, respondent_name, status, submitted_at, iv_questionnaires(title)")
-    .eq("status", "submitted")
-    .order("submitted_at", { ascending: false });
+  const [{ data: sessions }, { data: projects }] = await Promise.all([
+    client
+      .from("iv_sessions")
+      .select("id, respondent_name, status, submitted_at, iv_questionnaires(title)")
+      .eq("status", "submitted")
+      .order("submitted_at", { ascending: false }),
+    client
+      .from("iv_projects")
+      .select("id, title, brand_name, goal, key_colors, asset_paths, created_at")
+      .order("created_at", { ascending: false }),
+  ]);
 
   const sessionIds = (sessions ?? []).map((s) => s.id);
-  const { data: briefs } = sessionIds.length
-    ? await client.from("iv_briefs").select("id, session_id, updated_at, current_round").in("session_id", sessionIds)
+  const projectIds = (projects ?? []).map((p) => p.id);
+  const ownerParts = [
+    sessionIds.length && `session_id.in.(${sessionIds.join(",")})`,
+    projectIds.length && `project_id.in.(${projectIds.join(",")})`,
+  ].filter(Boolean) as string[];
+  const { data: briefs } = ownerParts.length
+    ? await client
+        .from("iv_briefs")
+        .select("id, session_id, project_id, updated_at, current_round")
+        .or(ownerParts.join(","))
     : { data: [] };
 
   const briefIds = (briefs ?? []).map((b) => b.id);
@@ -51,22 +65,35 @@ export async function GET() {
     }
   }
 
-  const briefBySession = new Map((briefs ?? []).map((b) => [b.session_id, b]));
-  const items = (sessions ?? []).map((s) => {
-    const brief = briefBySession.get(s.id);
-    return {
+  const briefBySession = new Map((briefs ?? []).filter((b) => b.session_id).map((b) => [b.session_id, b]));
+  const briefByProject = new Map((briefs ?? []).filter((b) => b.project_id).map((b) => [b.project_id, b]));
+  const counts = (brief: { id: string; current_round: number } | undefined) => ({
+    has_brief: !!brief,
+    current_round: brief?.current_round ?? 1,
+    references: brief ? (refCounts[brief.id] ?? 0) : 0,
+    concepts: brief ? (conceptCounts[brief.id] ?? 0) : 0,
+    evaluations: brief ? (evalCounts[brief.id] ?? 0) : 0,
+    svgs: brief ? (svgCounts[brief.id] ?? 0) : 0,
+  });
+
+  const items = [
+    ...(projects ?? []).map((p) => ({
+      type: "project" as const,
+      session_id: p.id,
+      respondent_name: p.brand_name,
+      questionnaire_title: p.title,
+      submitted_at: p.created_at,
+      ...counts(briefByProject.get(p.id)),
+    })),
+    ...(sessions ?? []).map((s) => ({
+      type: "interview" as const,
       session_id: s.id,
       respondent_name: s.respondent_name,
       questionnaire_title: (s.iv_questionnaires as unknown as { title: string } | null)?.title ?? "",
       submitted_at: s.submitted_at,
-      has_brief: !!brief,
-      current_round: brief?.current_round ?? 1,
-      references: brief ? (refCounts[brief.id] ?? 0) : 0,
-      concepts: brief ? (conceptCounts[brief.id] ?? 0) : 0,
-      evaluations: brief ? (evalCounts[brief.id] ?? 0) : 0,
-      svgs: brief ? (svgCounts[brief.id] ?? 0) : 0,
-    };
-  });
+      ...counts(briefBySession.get(s.id)),
+    })),
+  ];
 
   return NextResponse.json({ items });
 }

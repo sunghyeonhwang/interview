@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
+import { ownerFilter } from "@/lib/pipeline";
 
 type Params = { params: Promise<{ sessionId: string }> };
 
@@ -17,7 +18,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const { data: brief } = await client
     .from("iv_briefs")
     .select("id, current_round, round_feedback")
-    .eq("session_id", sessionId)
+    .or(ownerFilter(sessionId))
     .maybeSingle();
   if (!brief) return NextResponse.json({ error: "브리프가 없습니다." }, { status: 400 });
 

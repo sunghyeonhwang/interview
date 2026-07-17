@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
 import { claudeCall, extractJSON } from "@/lib/ai";
+import { ownerFilter, type DesignProject } from "@/lib/pipeline";
 import type { Question } from "@/lib/types";
 
 export const maxDuration = 300;
@@ -37,7 +38,7 @@ const BRIEF_SCHEMA = {
   },
 };
 
-// 인터뷰 답변(읽기 전용) → 디자인 브리프 생성
+// 인터뷰 답변(읽기 전용) 또는 프로젝트 애셋 → 디자인 브리프 생성
 export async function POST(_req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const { sessionId } = await params;
@@ -48,8 +49,13 @@ export async function POST(_req: NextRequest, { params }: Params) {
     .from("iv_sessions")
     .select("id, respondent_name, status, questionnaire_id, iv_questionnaires(title)")
     .eq("id", sessionId)
-    .single();
-  if (!session) return NextResponse.json({ error: "세션을 찾을 수 없습니다." }, { status: 404 });
+    .maybeSingle();
+  if (!session) {
+    // 세션이 아니면 애셋 프로젝트 모드로 시도
+    const { data: project } = await client.from("iv_projects").select("*").eq("id", sessionId).maybeSingle();
+    if (!project) return NextResponse.json({ error: "세션/프로젝트를 찾을 수 없습니다." }, { status: 404 });
+    return projectBrief(client, project);
+  }
   if (session.status !== "submitted") {
     return NextResponse.json({ error: "제출 완료된 인터뷰에서만 기획을 생성할 수 있습니다." }, { status: 400 });
   }
@@ -119,6 +125,58 @@ export async function POST(_req: NextRequest, { params }: Params) {
   return NextResponse.json({ brief: data });
 }
 
+// 애셋 프로젝트 모드: 브랜드 자산(로고 이미지 비전 입력)·키컬러·목표 → 베리에이션 브리프
+async function projectBrief(client: ReturnType<typeof db>, project: DesignProject) {
+  const images: string[] = [];
+  for (const path of (project.asset_paths ?? []).slice(0, 3)) {
+    const { data: file } = await client.storage.from("iv-concepts").download(path);
+    if (file) images.push(Buffer.from(await file.arrayBuffer()).toString("base64"));
+  }
+
+  const text = await claudeCall({
+    system: `너는 브랜드 전략가다. "이미 확립된 브랜드"의 기존 자산을 응용·확장하는 디자인 브리프를 만든다.
+지금은 신규 아이덴티티 개발이 아니라, 첨부된 원본 로고 애셋과 키컬러를 기반으로 한 베리에이션/응용 작업이다.
+규칙:
+- positioning에는 이 프로젝트의 목표(어떤 산출물이 왜 필요한지)를 요약한다.
+- directions는 원본 아이덴티티(형태 언어·키컬러)를 유지하면서도 서로 뚜렷이 다른 응용 방향 2~3개로 만든다.
+  (예: 심볼 단순화/모노그램화, 그래픽 모티프 확장, 엠블럼·배지 응용 등 — 프로젝트 목표에 맞게)
+- anti에는 "원본 아이덴티티를 훼손하는 것"(키컬러 무시, 형태 언어 이탈 등)을 반드시 포함한다.
+- search_queries는 각 방향당 2~3개. 유사한 브랜드 리프레시/베리에이션/서브브랜드 사례를 찾는 쿼리로,
+  디자인 어워드·큐레이션 매체(site:behance.net, site:bpando.org)를 활용한다. Pinterest는 절대 포함하지 않는다.`,
+    prompt: `## 프로젝트
+- 프로젝트명: ${project.title}
+- 브랜드명: ${project.brand_name}
+- 목표: ${project.goal ?? "(미기재)"}
+- 키컬러: ${(project.key_colors ?? []).join(", ") || "(첨부 이미지에서 추출)"}
+${images.length ? `- 첨부 이미지: 원본 로고 애셋 ${images.length}건` : "- 첨부 애셋 없음 — 브랜드명과 목표만으로 작성"}
+
+위 브랜드의 기존 자산을 응용하는 디자인 브리프를 JSON으로 작성하라.`,
+    images,
+    schema: BRIEF_SCHEMA,
+    effort: "medium",
+  });
+  const content = extractJSON<Record<string, unknown>>(text);
+
+  const { data: existing } = await client.from("iv_briefs").select("id").eq("project_id", project.id).maybeSingle();
+  if (existing) {
+    const { data, error } = await client
+      .from("iv_briefs")
+      .update({ content, updated_at: new Date().toISOString() })
+      .eq("id", existing.id)
+      .select()
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ brief: data });
+  }
+  const { data, error } = await client
+    .from("iv_briefs")
+    .insert({ project_id: project.id, content })
+    .select()
+    .single();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ brief: data });
+}
+
 // 관리자가 브리프 직접 수정
 export async function PATCH(req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
@@ -128,7 +186,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   const { data, error } = await db()
     .from("iv_briefs")
     .update({ content, updated_at: new Date().toISOString() })
-    .eq("session_id", sessionId)
+    .or(ownerFilter(sessionId))
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
