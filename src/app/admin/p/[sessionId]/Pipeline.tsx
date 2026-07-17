@@ -1032,6 +1032,33 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         </section>
       )}
 
+      {/* 하단 단계 이동 */}
+      {(() => {
+        const idx = TABS.findIndex((t) => t.key === tab);
+        const go = (t: Tab) => {
+          setTab(t);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        };
+        return (
+          <div className="flex items-center justify-between border-t border-line pt-5">
+            {idx > 0 ? (
+              <button onClick={() => go(TABS[idx - 1].key)} className="btn btn-ghost">
+                ← 이전: {TABS[idx - 1].label.replace(/^\d+\. /, "")}
+              </button>
+            ) : (
+              <span />
+            )}
+            {idx < TABS.length - 1 ? (
+              <button onClick={() => go(TABS[idx + 1].key)} className="btn btn-primary">
+                다음: {TABS[idx + 1].label.replace(/^\d+\. /, "")} →
+              </button>
+            ) : (
+              <span />
+            )}
+          </div>
+        );
+      })()}
+
       {/* 비교 바 (하단 고정) */}
       {compareIds.length > 0 && !showCompare && (
         <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
