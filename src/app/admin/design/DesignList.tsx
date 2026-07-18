@@ -112,7 +112,7 @@ function Stepper({ i }: { i: Item }) {
           {idx > 0 && <span className="text-fg2/30">→</span>}
           <span
             className={`rounded-full px-2 py-0.5 whitespace-nowrap ${
-              s.done ? "bg-inv/15 font-semibold text-inv" : "border border-line text-fg2/50"
+              s.done ? "bg-inv/15 font-semibold text-inv" : "border border-line text-hint"
             }`}
           >
             {s.done ? "✓ " : ""}{s.label}{s.count > 0 ? ` ${s.count}` : ""}
@@ -190,7 +190,7 @@ export default function DesignList() {
                       <button
                         onClick={(e) => {
                           e.preventDefault();
-                          if (confirm(`"${i.questionnaire_title}" 프로젝트를 삭제할까요? 생성된 시안·SVG도 함께 삭제됩니다.`)) {
+                          if (confirm(`"${i.questionnaire_title}" 프로젝트를 삭제할까요? 생성된 시안·SVG·목업이 함께 삭제되며 복구할 수 없습니다.`)) {
                             fetch(`/api/admin/projects/${i.session_id}`, { method: "DELETE" }).then(load);
                           }
                         }}

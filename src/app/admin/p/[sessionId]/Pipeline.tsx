@@ -158,6 +158,21 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     }
   }
 
+  // 가벼운 토글(별표·선택·레퍼런스 선택)은 전역 busy에 잡지 않는다 — 긴 생성 작업 중에도 조작 가능
+  async function runQuiet(label: string, fn: () => Promise<Response>) {
+    setError("");
+    try {
+      const res = await fn();
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? `${label} 실패`);
+      }
+      await load();
+    } catch {
+      setError(`${label} 중 오류가 발생했습니다.`);
+    }
+  }
+
   if (!state) {
     return <p className="text-sm text-fg2">{error || "불러오는 중…"}</p>;
   }
@@ -173,9 +188,14 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     (brief ? 0.15 : 0) + concepts.length * 0.33 + evaluations.length * 0.1 + svgs.length * 0.12 + mockups.length * 0.15;
 
   const toggleCompare = (id: string) =>
-    setCompareIds((ids) =>
-      ids.includes(id) ? ids.filter((x) => x !== id) : ids.length >= 4 ? ids : [...ids, id]
-    );
+    setCompareIds((ids) => {
+      if (ids.includes(id)) return ids.filter((x) => x !== id);
+      if (ids.length >= 4) {
+        flashNotice("⚖ 비교는 최대 4개까지 담을 수 있습니다 — 먼저 하나를 빼주세요");
+        return ids;
+      }
+      return [...ids, id];
+    });
 
   // 미평가 시안 일괄 평가 (순차 실행) — 서버에서 최신 목록을 다시 받아 대상 산정
   async function evaluateAll() {
@@ -313,12 +333,13 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         )}
         <span className="flex items-center gap-3">
           {estCost > 0 && (
-            <span
-              className="text-xs text-fg2/60"
-              title="추정 단가 — 시안 $0.33(구성+고품질 이미지 2장), 평가 $0.10, SVG $0.12, 목업 $0.15, 브리프 $0.15. 셀프 리파인 시 시안당 최대 2배. 삭제·재생성 제외 대략치이며 실제 청구와 다를 수 있습니다."
+            <button
+              className="text-xs text-hint hover:text-fg2"
+              onClick={() => flashNotice(`💰 추정 단가 — 시안 $0.33 · 평가 $0.10 · SVG $0.12 · 목업 $0.15 · 브리프 $0.15 (셀프 리파인 시 시안당 ~2배, 대략치)`)}
+              title="누르면 산정 근거를 표시합니다"
             >
               💰 예상 비용 ≈ ${estCost.toFixed(2)}
-            </span>
+            </button>
           )}
           {(svgs.length > 0 || concepts.length > 0) && (
             <a href={`/api/admin/pipeline/${sessionId}/export`} className="btn btn-ghost !min-h-8 !px-4 !py-1 text-xs">
@@ -549,7 +570,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                         )}
                       </div>
                       <button
-                        onClick={() => run("선택", () => fetch(`/api/admin/pipeline/references/${r.id}`, {
+                        onClick={() => runQuiet("선택", () => fetch(`/api/admin/pipeline/references/${r.id}`, {
                           method: "PATCH",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ selected: !r.selected }),
@@ -565,7 +586,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 ))}
               </div>
               {references.length === 0 && <p className="text-center text-sm text-fg2">아직 수집된 레퍼런스가 없습니다. 위에서 서치를 실행하세요.</p>}
-              <p className="text-xs text-fg2/60">※ 수집 이미지는 참고용입니다. 저작물을 직접 사용하지 마세요.</p>
+              <p className="text-xs text-hint">※ 수집 이미지는 참고용입니다. 저작물을 직접 사용하지 마세요.</p>
             </>
           )}
         </section>
@@ -603,7 +624,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     }))}
                   />
                 </div>
-                <p className="mt-2 text-xs text-fg2/60">
+                <p className="mt-2 text-xs text-hint">
                   다음 회차부터는 이전 회차에서 <strong className="text-fg2">선택한 시안을 기반으로 발전·정제</strong>됩니다 (피드백 최우선 반영).
                 </p>
               </div>
@@ -714,9 +735,14 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 {engines.length === 0 && <p className="mt-3 text-sm text-danger">⚠️ OPENAI_API_KEY / GEMINI_API_KEY가 없어 이미지 생성을 사용할 수 없습니다.</p>}
               </div>
 
+              {concepts.length > 0 && (
+                <p className="text-xs text-hint">
+                  ⭐ 별표 = 남길 시안 표시 (정리·다시 시작 때 보존) · 선택 = SVG 생성과 다음 회차의 기준 · ⚖ 비교 = 최대 4개 나란히 보기
+                </p>
+              )}
               {concepts.length > 0 && concepts.some((c) => !c.starred && !c.selected) && (
                 <div className="flex items-center justify-end gap-2">
-                  <span className="text-xs text-fg2/60">
+                  <span className="text-xs text-hint">
                     ⭐ 별표·선택 {concepts.filter((c) => c.starred || c.selected).length}개 보존
                   </span>
                   <button
@@ -744,13 +770,19 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=light`} alt="라이트" className="w-full rounded-(--radius-xs) bg-white" loading="lazy" />
                       <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=dark`} alt="다크" className="w-full rounded-(--radius-xs) bg-black" loading="lazy" />
                     </div>
-                    <div className="mt-1.5 flex gap-3 text-xs">
+                    <div className="mt-1.5 flex items-center gap-3 text-xs">
                       <a href={`/api/admin/pipeline/concepts/${c.id}/file?mode=light&dl=1`} className="link-quiet">⬇ 라이트 PNG</a>
                       <a href={`/api/admin/pipeline/concepts/${c.id}/file?mode=dark&dl=1`} className="link-quiet">⬇ 다크 PNG</a>
+                      <button
+                        onClick={() => confirm("이 시안을 삭제할까요? 연결된 SVG·평가·목업도 함께 삭제되며 복구할 수 없습니다.") && run("삭제", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, { method: "DELETE" }))}
+                        className="link-quiet ml-auto !text-danger/70 hover:!text-danger"
+                      >
+                        삭제
+                      </button>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <button
-                        onClick={() => run("별표", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
+                        onClick={() => runQuiet("별표", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
                           method: "PATCH",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ starred: !c.starred }),
@@ -787,20 +819,15 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                           {busy === `변형 생성 (${c.direction})` ? "⏳ 변형 중…" : "🔁 비슷하게 변형"}
                         </button>
                         <button
-                          onClick={() => run("선택", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
+                          onClick={() => runQuiet("선택", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
                             method: "PATCH",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ selected: !c.selected }),
                           }))}
                           className={`btn !min-h-8 !px-3 !py-1 text-xs ${c.selected ? "btn-primary" : "btn-ghost"}`}
+                          title="SVG 생성 대상이자 다음 회차의 발전 기반이 됩니다"
                         >
-                          {c.selected ? "✓ SVG 대상" : "SVG 대상으로 선택"}
-                        </button>
-                        <button
-                          onClick={() => confirm("이 시안을 삭제할까요?") && run("삭제", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, { method: "DELETE" }))}
-                          className="link-quiet !text-danger/70 hover:!text-danger"
-                        >
-                          삭제
+                          {c.selected ? "✓ 선택됨 (SVG·회차)" : "선택 (SVG·회차)"}
                         </button>
                       </span>
                     </div>
@@ -884,7 +911,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     }}
                   />
                 )}
-                <p className="mt-2 text-xs text-fg2/60">
+                <p className="mt-2 text-xs text-hint">
                   ※ 기준 변경은 이후 평가부터 적용됩니다. 기존 평가 결과는 그대로 보존됩니다.
                 </p>
               </div>
@@ -911,7 +938,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                               ⬇ SVG
                             </a>
                           ) : (
-                            <span className="text-xs text-fg2/40">SVG 없음</span>
+                            <span className="text-xs text-hint">SVG 없음</span>
                           )}
                         </div>
                       ))}
@@ -947,15 +974,15 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                             {ev ? "재평가" : "AI 평가"}
                           </button>
                           <button
-                            onClick={() => run("선택", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
+                            onClick={() => runQuiet("선택", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
                               method: "PATCH",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ selected: !c.selected }),
                             }))}
-                            disabled={!!busy}
                             className={`btn !min-h-8 !py-1 text-xs ${c.selected ? "btn-primary" : "btn-ghost"}`}
+                            title="SVG 생성 대상이자 다음 회차의 발전 기반이 됩니다"
                           >
-                            {c.selected ? "✓ 선택됨 → SVG" : "선택"}
+                            {c.selected ? "✓ 선택됨 (SVG·회차)" : "선택 (SVG·회차)"}
                           </button>
                           <button
                             onClick={() => toggleCompare(c.id)}
@@ -991,7 +1018,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   );
                 })}
               </div>
-              <p className="text-xs text-fg2/60">※ AI 평가는 참고용 1차 스크리닝입니다. 최종 선정은 대표와의 합의 기준으로 결정하세요.</p>
+              <p className="text-xs text-hint">※ AI 평가는 참고용 1차 스크리닝입니다. 최종 선정은 대표와의 합의 기준으로 결정하세요.</p>
             </>
           )}
         </section>
@@ -1044,7 +1071,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                         <span className="ml-auto flex gap-3">
                           <a href={`/api/admin/pipeline/svg/${s.id}`} className="btn btn-primary !min-h-8 !px-3 !py-1 text-xs">.svg 다운로드</a>
                           <button
-                            onClick={() => confirm("이 SVG를 삭제할까요?") && run("삭제", () => fetch(`/api/admin/pipeline/svg/${s.id}`, { method: "DELETE" }))}
+                            onClick={() => confirm("이 SVG 버전을 삭제할까요? 복구할 수 없습니다.") && run("삭제", () => fetch(`/api/admin/pipeline/svg/${s.id}`, { method: "DELETE" }))}
                             className="link-quiet !text-danger/70 hover:!text-danger"
                           >
                             삭제
@@ -1111,11 +1138,11 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                           />
                           <div className="mt-1.5 flex items-center gap-2 text-xs">
                             <span className="badge badge-pending">{mockupLabel(m.kind)}</span>
-                            <span className="truncate text-fg2/60">{parent?.direction ?? ""}</span>
+                            <span className="truncate text-hint">{parent?.direction ?? ""}</span>
                             <span className="ml-auto flex gap-2">
                               <a href={`/api/admin/pipeline/mockups/${m.id}?dl=1`} className="link-quiet">⬇</a>
                               <button
-                                onClick={() => confirm("이 목업을 삭제할까요?") && run("삭제", () => fetch(`/api/admin/pipeline/mockups/${m.id}`, { method: "DELETE" }))}
+                                onClick={() => confirm("이 목업을 삭제할까요? 복구할 수 없습니다.") && run("삭제", () => fetch(`/api/admin/pipeline/mockups/${m.id}`, { method: "DELETE" }))}
                                 className="link-quiet !text-danger/70 hover:!text-danger"
                               >
                                 ✕
@@ -1160,6 +1187,9 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         );
       })()}
 
+      {/* 비교 바가 떠 있을 때 하단 버튼이 가려지지 않도록 여백 확보 */}
+      {compareIds.length > 0 && !showCompare && <div aria-hidden className="h-16" />}
+
       {/* 진행 상태 플로팅 레이어 — 스크롤과 무관하게 항상 보임 */}
       {busy && (
         <div className="pointer-events-none fixed top-4 left-1/2 z-50 -translate-x-1/2">
@@ -1175,9 +1205,9 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
         </div>
       )}
 
-      {/* 완료 토스트 */}
-      {!busy && notice && (
-        <div className="pointer-events-none fixed top-4 left-1/2 z-50 -translate-x-1/2">
+      {/* 완료·안내 토스트 (진행 배지가 떠 있으면 그 아래에 표시) */}
+      {notice && (
+        <div className={`pointer-events-none fixed ${busy ? "top-18" : "top-4"} left-1/2 z-50 -translate-x-1/2`}>
           <div className="card !rounded-full !px-5 !py-2.5 shadow-2xl">
             <span className="whitespace-nowrap text-sm font-semibold text-fg">{notice}</span>
           </div>
@@ -1270,7 +1300,7 @@ function CompareView({
                     </div>
                   </>
                 ) : (
-                  <p className="mt-2 text-xs text-fg2/50">아직 평가 없음</p>
+                  <p className="mt-2 text-xs text-hint">아직 평가 없음</p>
                 )}
                 {c.rationale && (
                   <p className="mt-2 text-xs leading-relaxed text-fg2">{c.rationale}</p>
@@ -1319,7 +1349,7 @@ function RestartPanel({
           <strong className="text-fg">이전 기각 사유</strong>
           {notes.map((n, i) => (
             <p key={i} className="mt-1">
-              {i + 1}. {n.feedback} <span className="text-fg2/50">({new Date(n.created_at).toLocaleDateString("ko-KR")})</span>
+              {i + 1}. {n.feedback} <span className="text-hint">({new Date(n.created_at).toLocaleDateString("ko-KR")})</span>
             </p>
           ))}
         </div>
@@ -1411,7 +1441,7 @@ function NextRound({ disabled, hint, onStart }: { disabled: boolean; hint: strin
   if (!open) {
     return (
       <span className="flex items-center gap-2">
-        {hint && <span className="text-xs text-fg2/50">{hint}</span>}
+        {hint && <span className="text-xs text-hint">{hint}</span>}
         <button onClick={() => setOpen(true)} disabled={disabled} className="btn btn-ghost !min-h-8 !px-4 !py-1 text-xs">
           다음 회차 시작 →
         </button>
@@ -1746,7 +1776,7 @@ function SvgColorEditor({
             <span className="font-mono text-xs text-fg2">{c}</span>
           </label>
         ))}
-        {colors.length === 0 && <span className="text-xs text-fg2/50">치환 가능한 HEX 색상이 없습니다.</span>}
+        {colors.length === 0 && <span className="text-xs text-hint">치환 가능한 HEX 색상이 없습니다.</span>}
       </div>
       <div className="flex gap-2">
         <button
@@ -1770,7 +1800,7 @@ function RefImage({ src, name }: { src: string | null; name: string }) {
   if (!src || failed) {
     return (
       <div className="flex h-36 w-full items-center justify-center rounded-(--radius-xs) border border-line bg-base/40">
-        <span className="text-2xl font-bold text-fg2/40">{name.slice(0, 2)}</span>
+        <span className="text-2xl font-bold text-hint">{name.slice(0, 2)}</span>
       </div>
     );
   }
@@ -1817,21 +1847,28 @@ function NoteInput({ refId, initial, onSaved }: { refId: string; initial: string
   const [note, setNote] = useState(initial);
   const [saved, setSaved] = useState(false);
   return (
-    <input
-      value={note}
-      onChange={(e) => { setNote(e.target.value); setSaved(false); }}
-      onBlur={async () => {
-        if (note === initial) return;
-        await fetch(`/api/admin/pipeline/references/${refId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ note }),
-        });
-        setSaved(true);
-        onSaved();
-      }}
-      placeholder={saved ? "메모 저장됨 ✓" : "메모 (어떤 점을 참고할지)"}
-      className="input mt-2 !py-1.5 text-xs"
-    />
+    <div className="relative mt-2">
+      <input
+        value={note}
+        onChange={(e) => { setNote(e.target.value); setSaved(false); }}
+        onBlur={async () => {
+          if (note === initial) return;
+          await fetch(`/api/admin/pipeline/references/${refId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ note }),
+          });
+          setSaved(true);
+          onSaved();
+        }}
+        placeholder="메모 (어떤 점을 참고할지)"
+        className="input !py-1.5 pr-20 text-xs"
+      />
+      {saved && (
+        <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs font-semibold text-inv">
+          ✓ 저장됨
+        </span>
+      )}
+    </div>
   );
 }

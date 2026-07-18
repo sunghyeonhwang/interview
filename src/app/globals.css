@@ -265,3 +265,8 @@ h2 {
     -webkit-backdrop-filter: none;
   }
 }
+
+/* 힌트 텍스트 — 다크에선 은은하게, 라이트에선 대비(WCAG AA) 확보 */
+:root { --text-hint: color-mix(in srgb, var(--text-secondary) 62%, transparent); }
+:root[data-theme="light"] { --text-hint: #6f7368; }
+.text-hint { color: var(--text-hint); }
