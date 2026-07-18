@@ -124,6 +124,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
   const [autoEval, setAutoEval] = useState(false);
+  const [selfRefine, setSelfRefine] = useState(false);
   const [editingBrief, setEditingBrief] = useState(false);
   const [editingCriteria, setEditingCriteria] = useState(false);
 
@@ -166,9 +167,9 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const latestEval = (conceptId: string) => evaluations.find((e) => e.concept_id === conceptId);
   const svgsOf = (conceptId: string) => svgs.filter((s) => s.concept_id === conceptId);
 
-  // 예상 API 비용 (추정 단가 — 시안: 구성 $0.05 + 이미지 2장 $0.08, 평가 $0.10, SVG $0.12, 브리프 $0.15)
+  // 예상 API 비용 (추정 단가 — 시안: 구성 $0.08 + 고품질 이미지 2장 $0.25, 평가 $0.10, SVG $0.12, 목업 $0.15)
   const estCost =
-    (brief ? 0.15 : 0) + concepts.length * 0.13 + evaluations.length * 0.1 + svgs.length * 0.12 + mockups.length * 0.06;
+    (brief ? 0.15 : 0) + concepts.length * 0.33 + evaluations.length * 0.1 + svgs.length * 0.12 + mockups.length * 0.15;
 
   const toggleCompare = (id: string) =>
     setCompareIds((ids) =>
@@ -250,6 +251,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           body: JSON.stringify({
             direction: combos[i].d,
             engine: combos[i].e,
+            refine: selfRefine,
             options: {
               logo_type: genOpts.logo_type || undefined,
               color_hint: genOpts.color_hint || undefined,
@@ -281,7 +283,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           {estCost > 0 && (
             <span
               className="text-xs text-fg2/60"
-              title="추정 단가 — 시안 $0.13(구성+이미지 2장), 평가 $0.10, SVG $0.12, 브리프 $0.15. 삭제된 항목·재생성은 제외된 대략치이며 실제 청구와 다를 수 있습니다."
+              title="추정 단가 — 시안 $0.33(구성+고품질 이미지 2장), 평가 $0.10, SVG $0.12, 목업 $0.15, 브리프 $0.15. 셀프 리파인 시 시안당 최대 2배. 삭제·재생성 제외 대략치이며 실제 청구와 다를 수 있습니다."
             >
               💰 예상 비용 ≈ ${estCost.toFixed(2)}
             </span>
@@ -618,6 +620,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                               body: JSON.stringify({
                                 direction: d.name,
                                 engine: e,
+                                refine: selfRefine,
                                 options: {
                                   logo_type: genOpts.logo_type || undefined,
                                   color_hint: genOpts.color_hint || undefined,
@@ -653,6 +656,18 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       className="h-4 w-4 accent-(--key)"
                     />
                     생성 후 자동 평가
+                  </label>
+                  <label
+                    className="flex cursor-pointer items-center gap-2 text-sm text-fg2"
+                    title="1차 결과를 AI 아트 디렉터가 비평 → 부족하면 프롬프트를 고쳐 1회 재생성합니다. 시안당 비용·시간 약 2배"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selfRefine}
+                      onChange={(e) => setSelfRefine(e.target.checked)}
+                      className="h-4 w-4 accent-(--key)"
+                    />
+                    ✨ 셀프 리파인 (비용 ~2배)
                   </label>
                 </div>
                 {engines.length === 0 && <p className="mt-3 text-sm text-danger">⚠️ OPENAI_API_KEY / GEMINI_API_KEY가 없어 이미지 생성을 사용할 수 없습니다.</p>}

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
 import { ownerFilter } from "@/lib/pipeline";
-import { claudeCall, extractJSON, generateImage, type ImageEngine } from "@/lib/ai";
+import { claudeCall, extractJSON, generateImage, type ImageEngine, type VisionImage } from "@/lib/ai";
 
 export const maxDuration = 300;
 
@@ -23,16 +23,51 @@ const COMPOSE_SCHEMA = {
   },
 };
 
+// 레퍼런스 썸네일을 비전 입력용으로 다운로드 (파비콘·비이미지·대용량 제외)
+async function fetchRefImage(url: string): Promise<VisionImage | null> {
+  if (!url || url.includes("s2/favicons")) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const ct = (res.headers.get("content-type") ?? "").split(";")[0].trim();
+    if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(ct)) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 4 * 1024 * 1024) return null;
+    return { data: buf.toString("base64"), media_type: ct as VisionImage["media_type"] };
+  } catch {
+    return null;
+  }
+}
+
+// 자가 비평 스키마 — 1차 결과를 브리프 대비 검토해 개선 프롬프트 산출
+const REFINE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "critique", "image_prompt"],
+  properties: {
+    verdict: { type: "string", enum: ["keep", "improve"], description: "keep = 1차 결과 충분, improve = 재생성 필요" },
+    critique: { type: "string", description: "한국어 비평 2~3문장: 무엇이 약하고 무엇을 고쳐야 하는지" },
+    image_prompt: { type: "string", description: "개선된 영문 이미지 프롬프트 (keep이면 원본 그대로)" },
+  },
+};
+
 // 시안 1건 생성: 프롬프트·제작의도 구성(Claude) → 라이트/다크 이미지 2장(선택 엔진) → Storage 저장
 export async function POST(req: NextRequest, { params }: Params) {
   if (!(await isAdmin())) return NextResponse.json({ error: "인증 필요" }, { status: 401 });
   const { sessionId } = await params;
-  const { direction: bodyDirection, engine: bodyEngine, prompt_override, options, variant_of } = (await req.json().catch(() => ({}))) as {
+  const { direction: bodyDirection, engine: bodyEngine, prompt_override, options, variant_of, refine } = (await req.json().catch(() => ({}))) as {
     direction?: string;
     engine?: ImageEngine;
     prompt_override?: string;
     options?: { logo_type?: string; color_hint?: string; extra?: string };
     variant_of?: string; // 기존 시안 id — 지정 시 해당 시안의 미세 변형을 생성
+    refine?: boolean; // 셀프 리파인: 1차 결과를 AI가 비평 → 개선 프롬프트로 1회 재생성
   };
   if (!variant_of && (!bodyDirection || !bodyEngine)) {
     return NextResponse.json({ error: "direction과 engine이 필요합니다." }, { status: 400 });
@@ -48,7 +83,7 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   const { data: selectedRefs } = await client
     .from("iv_references")
-    .select("id, brand_name, summary, note")
+    .select("id, brand_name, summary, note, image_url")
     .eq("brief_id", brief.id)
     .eq("selected", true);
   if (!selectedRefs?.length) {
@@ -172,11 +207,21 @@ ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.
 기준 시안의 핵심을 유지한 채 디테일만 달리한 변형의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
       images: [...projectImages, ...srcImages],
       schema: COMPOSE_SCHEMA,
-      effort: "medium",
+      effort: "high",
     });
     composed = extractJSON(text);
   } else {
     const refineMode = round > 1 && baseConcept;
+
+    // 선택 레퍼런스의 실제 이미지를 비전 입력으로 — 텍스트 요약이 아니라 조형을 직접 분석하게 한다
+    const refImages = (
+      await Promise.all(
+        (selectedRefs as { image_url?: string | null }[])
+          .slice(0, 3)
+          .map((r) => fetchRefImage(r.image_url ?? ""))
+      )
+    ).filter((x): x is VisionImage => x !== null);
+
     const text = await claudeCall({
       system: refineMode
         ? `너는 브랜드 아이덴티티 아트 디렉터다. 지금은 ${round}회차 — 첨부된 이미지(이전 회차에서 선정된 시안)를 기반으로 "발전·정제"하는 단계다.
@@ -199,6 +244,7 @@ ${projectLines}
 
 ## 선택된 레퍼런스 (${selectedRefs.length}개)
 ${selectedRefs.map((r) => `- ${r.brand_name}: ${r.summary}${r.note ? ` / 관리자 메모: ${r.note}` : ""}`).join("\n")}
+${refImages.length ? `※ 첨부 이미지 중 ${refImages.length}장은 위 레퍼런스의 실제 이미지다 (순서: ${projectImages.length ? `원본 애셋 ${projectImages.length}장 다음, ` : "첫 번째부터, "}발전 기반 시안보다 앞). 조형 언어·구성·무드를 직접 관찰해 분석하고, 베끼지 말고 원리만 가져와라.` : ""}
 ${
   refineMode
     ? `\n## 발전 기반 (첨부 이미지의 마지막 1장 = ${round - 1}회차 선정 시안)
@@ -211,19 +257,59 @@ ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.
 ${priorPrompts.length ? `\n## 이번 회차에 이미 시도한 접근 (이것들과 다르게)\n${priorPrompts.map((p, i) => `${i + 1}. ${p.slice(0, 160)}`).join("\n")}` : ""}
 
 위 재료로 로고 컨셉 시안의 이미지 프롬프트·제작 의도·팔레트를 JSON으로 작성하라.`,
-      images: [...projectImages, ...baseImages],
+      images: [...projectImages, ...refImages, ...baseImages],
       schema: COMPOSE_SCHEMA,
-      effort: "medium",
+      effort: "high",
     });
     composed = extractJSON(text);
   }
 
   // 2) 라이트/다크 2장 생성
-  const base = composed.image_prompt;
-  const [light, dark] = await Promise.all([
-    generateImage(engine, `${base}\n\nPresented on a clean white background, light mode version. Professional brand identity presentation, high quality, centered composition.`),
-    generateImage(engine, `${base}\n\nPresented on a very dark charcoal background (#0a0c02), dark mode version with adjusted colors for dark background legibility. Professional brand identity presentation, high quality, centered composition.`),
+  const lightSuffix = `\n\nPresented on a clean white background, light mode version. Professional brand identity presentation, high quality, centered composition.`;
+  const darkSuffix = `\n\nPresented on a very dark charcoal background (#0a0c02), dark mode version with adjusted colors for dark background legibility. Professional brand identity presentation, high quality, centered composition.`;
+  let [light, dark] = await Promise.all([
+    generateImage(engine, `${composed.image_prompt}${lightSuffix}`),
+    generateImage(engine, `${composed.image_prompt}${darkSuffix}`),
   ]);
+
+  // 2.5) 셀프 리파인: 1차 결과를 브리프 대비 자가 비평 → 개선 필요 시 프롬프트 수정 후 1회 재생성
+  if (refine && !prompt_override) {
+    try {
+      const critique = extractJSON<{ verdict: "keep" | "improve"; critique: string; image_prompt: string }>(
+        await claudeCall({
+          system: `너는 까다로운 브랜드 아트 디렉터다. 첨부 이미지는 방금 생성된 로고 시안 1차 결과(라이트 버전)다.
+브리프와 제작 의도에 비추어 이 시안을 냉정하게 비평하고, 프롬프트를 어떻게 고치면 나아질지 판단하라.
+verdict 기준: 조형 완성도·브랜드명 표기 정확성·브리프 적합성이 모두 준수하면 keep, 하나라도 약하면 improve.
+improve일 때 image_prompt는 원본 프롬프트의 좋은 점은 유지하면서 지적 사항만 정밀하게 고친 완전한 프롬프트여야 한다 (배경 지정 문구는 넣지 말 것).`,
+          prompt: `## 브리프
+포지셔닝: ${brief.content?.positioning}
+키워드: ${(brief.content?.keywords ?? []).join(", ")}
+피할 것: ${(brief.content?.anti ?? []).join(", ")}
+
+## 이 시안의 제작 의도
+${composed.rationale}
+
+## 사용된 프롬프트
+${composed.image_prompt}
+
+첨부된 1차 결과를 비평하고 JSON으로 답하라.`,
+          images: [light.toString("base64")],
+          schema: REFINE_SCHEMA,
+          effort: "medium",
+        })
+      );
+      if (critique.verdict === "improve" && critique.image_prompt?.trim()) {
+        composed.image_prompt = critique.image_prompt.trim();
+        composed.rationale = `${composed.rationale ?? ""}\n\n[셀프 리파인] ${critique.critique}`;
+        [light, dark] = await Promise.all([
+          generateImage(engine, `${composed.image_prompt}${lightSuffix}`),
+          generateImage(engine, `${composed.image_prompt}${darkSuffix}`),
+        ]);
+      }
+    } catch {
+      /* 리파인 실패 시 1차 결과 그대로 사용 */
+    }
+  }
 
   // 3) Storage 업로드
   const { count } = await client

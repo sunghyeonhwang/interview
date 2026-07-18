@@ -11,11 +11,16 @@ function anthropic() {
   return new Anthropic();
 }
 
+export interface VisionImage {
+  data: string; // base64
+  media_type: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+}
+
 interface ClaudeCallOpts {
   system: string;
   prompt: string;
-  /** base64 PNG 이미지들 (비전 입력) */
-  images?: string[];
+  /** 비전 입력 — 문자열이면 base64 PNG로 간주 */
+  images?: (string | VisionImage)[];
   /** JSON Schema — 지정 시 구조화 출력 강제 (서버 툴과 병용 금지) */
   schema?: Record<string, unknown>;
   /** 웹 서치 툴 활성화 (Pinterest 차단 내장) */
@@ -28,12 +33,10 @@ interface ClaudeCallOpts {
 export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
   const client = anthropic();
   const content: Anthropic.ContentBlockParam[] = [
-    ...(opts.images ?? []).map(
-      (data): Anthropic.ContentBlockParam => ({
-        type: "image",
-        source: { type: "base64", media_type: "image/png", data },
-      })
-    ),
+    ...(opts.images ?? []).map((img): Anthropic.ContentBlockParam => {
+      const o = typeof img === "string" ? { data: img, media_type: "image/png" as const } : img;
+      return { type: "image", source: { type: "base64", media_type: o.media_type, data: o.data } };
+    }),
     { type: "text", text: opts.prompt },
   ];
 
@@ -121,12 +124,13 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
             image: await toFile(inputImage, "input.png", { type: "image/png" }),
             prompt,
             size: "1024x1024",
+            quality: "high",
           })
         : await client.images.generate({
             model: "gpt-image-1",
             prompt,
             size: "1024x1024",
-            quality: "medium",
+            quality: "high",
           });
       const b64 = res.data?.[0]?.b64_json;
       if (!b64) throw new Error("OpenAI 이미지 생성 결과가 비어 있습니다.");
@@ -139,22 +143,28 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
 
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY가 설정되지 않았습니다.");
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  try {
-    const res = await ai.models.generateContent({
-      model: "gemini-2.5-flash-image",
-      contents: inputImage
-        ? [
-            { inlineData: { mimeType: "image/png", data: inputImage.toString("base64") } },
-            { text: prompt },
-          ]
-        : prompt,
-    });
-    for (const part of res.candidates?.[0]?.content?.parts ?? []) {
-      if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+  // 상위 모델(Nano Banana Pro) 우선 — 실패 시 flash로 폴백
+  const models = ["gemini-3-pro-image-preview", "gemini-2.5-flash-image"];
+  let lastError: unknown = null;
+  for (const model of models) {
+    try {
+      const res = await ai.models.generateContent({
+        model,
+        contents: inputImage
+          ? [
+              { inlineData: { mimeType: "image/png", data: inputImage.toString("base64") } },
+              { text: prompt },
+            ]
+          : prompt,
+      });
+      for (const part of res.candidates?.[0]?.content?.parts ?? []) {
+        if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+      }
+      throw new Error("결과가 비어 있습니다 (정책 거부일 수 있음).");
+    } catch (e) {
+      lastError = e;
     }
-    throw new Error("결과가 비어 있습니다 (정책 거부일 수 있음).");
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`Gemini 이미지 생성 실패: ${msg.slice(0, 200)}`);
   }
+  const msg = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Gemini 이미지 생성 실패: ${msg.slice(0, 200)}`);
 }
