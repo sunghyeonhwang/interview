@@ -82,17 +82,29 @@ export async function POST(_req: NextRequest, { params }: Params) {
     }
   }
 
+  // 과거 재시작 기각 사유 — 새 브리프에 반드시 반영
+  const { data: existing } = await client
+    .from("iv_briefs")
+    .select("id, reset_notes")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+  const resetNotes = ((existing?.reset_notes ?? []) as { feedback: string }[]).map((n) => n.feedback);
+  const resetSection = resetNotes.length
+    ? `\n## 과거 재시작 기각 사유 (최우선 반영 — 같은 실수를 반복하는 방향은 금지)\n${resetNotes.map((f, i) => `${i + 1}. ${f}`).join("\n")}`
+    : "";
+
   // ── Claude로 브리프 생성 ──
   const text = await claudeCall({
     system: `너는 브랜드 전략가다. 대표 인터뷰 답변을 근거로 디자인 브리프를 만든다.
 규칙:
 - 모든 판단은 인터뷰 답변에 근거해야 하며, 답변에 없는 사실을 지어내지 않는다.
+- "과거 재시작 기각 사유"가 있으면 그 문제를 해소하는 방향으로 만들고, anti에도 반영한다.
 - directions는 서로 전략적으로 뚜렷이 구분되는 2~3개 방향으로 만든다 (표면적 변형 금지).
 - search_queries는 각 방향당 2~3개. 실제 브랜드/로고 벤치마크 사례를 찾는 쿼리로:
   디자인 어워드("good design award", "red dot", "iF design"), 큐레이션 매체(site:behance.net, site:bpando.org, site:underconsideration.com) 활용을 우선하고,
   업종·지역·스타일 키워드를 조합한다. Pinterest는 절대 포함하지 않는다.
 - anti에는 인터뷰의 안티 레퍼런스 답변을 반드시 반영한다.`,
-    prompt: `다음 인터뷰를 분석해 브리프를 JSON으로 작성하라.\n\n${lines.join("\n")}`,
+    prompt: `다음 인터뷰를 분석해 브리프를 JSON으로 작성하라.${resetSection}\n\n${lines.join("\n")}`,
     schema: BRIEF_SCHEMA,
     effort: "medium",
   });
@@ -100,12 +112,6 @@ export async function POST(_req: NextRequest, { params }: Params) {
   const content = extractJSON<Record<string, unknown>>(text);
 
   // upsert: 기존 브리프가 있으면 교체 (레퍼런스·시안은 CASCADE 유지되지 않도록 기존 brief 재사용)
-  const { data: existing } = await client
-    .from("iv_briefs")
-    .select("id")
-    .eq("session_id", sessionId)
-    .maybeSingle();
-
   if (existing) {
     const { data, error } = await client
       .from("iv_briefs")
@@ -133,6 +139,17 @@ async function projectBrief(client: ReturnType<typeof db>, project: DesignProjec
     if (file) images.push(Buffer.from(await file.arrayBuffer()).toString("base64"));
   }
 
+  // 과거 재시작 기각 사유 반영
+  const { data: existing } = await client
+    .from("iv_briefs")
+    .select("id, reset_notes")
+    .eq("project_id", project.id)
+    .maybeSingle();
+  const resetNotes = ((existing?.reset_notes ?? []) as { feedback: string }[]).map((n) => n.feedback);
+  const resetSection = resetNotes.length
+    ? `\n## 과거 재시작 기각 사유 (최우선 반영 — 같은 실수를 반복하는 방향은 금지)\n${resetNotes.map((f, i) => `${i + 1}. ${f}`).join("\n")}`
+    : "";
+
   const text = await claudeCall({
     system: `너는 브랜드 전략가다. "이미 확립된 브랜드"의 기존 자산을 응용·확장하는 디자인 브리프를 만든다.
 지금은 신규 아이덴티티 개발이 아니라, 첨부된 원본 로고 애셋과 키컬러를 기반으로 한 베리에이션/응용 작업이다.
@@ -150,6 +167,7 @@ async function projectBrief(client: ReturnType<typeof db>, project: DesignProjec
 - 키컬러: ${(project.key_colors ?? []).join(", ") || "(첨부 이미지에서 추출)"}
 ${images.length ? `- 첨부 이미지: 원본 로고 애셋 ${images.length}건` : "- 첨부 애셋 없음 — 브랜드명과 목표만으로 작성"}
 
+${resetSection}
 위 브랜드의 기존 자산을 응용하는 디자인 브리프를 JSON으로 작성하라.`,
     images,
     schema: BRIEF_SCHEMA,
@@ -157,7 +175,6 @@ ${images.length ? `- 첨부 이미지: 원본 로고 애셋 ${images.length}건`
   });
   const content = extractJSON<Record<string, unknown>>(text);
 
-  const { data: existing } = await client.from("iv_briefs").select("id").eq("project_id", project.id).maybeSingle();
   if (existing) {
     const { data, error } = await client
       .from("iv_briefs")

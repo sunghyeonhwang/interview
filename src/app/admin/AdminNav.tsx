@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const MENUS = [
   { href: "/admin", label: "인터뷰", active: (p: string) => p === "/admin" || p.startsWith("/admin/q") || p.startsWith("/admin/s") },
   { href: "/admin/design", label: "디자인", active: (p: string) => p.startsWith("/admin/design") || p.startsWith("/admin/p") },
+  { href: "/admin/guide", label: "설명서", active: (p: string) => p.startsWith("/admin/guide") },
 ];
 
 export default function AdminNav() {

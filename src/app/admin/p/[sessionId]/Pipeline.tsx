@@ -22,6 +22,7 @@ interface Brief {
   current_round: number;
   round_feedback: { round: number; feedback: string }[];
   criteria: Criterion[] | null;
+  reset_notes: { feedback: string; created_at: string }[];
 }
 interface Reference {
   id: string;
@@ -206,6 +207,37 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     }
     setBusy(null);
     flashNotice(`✅ 모두 평가 완료 (${targets.length}건)`);
+  }
+
+  // 파이프라인 재시작: 정리 + 기각 사유 기록 → 사유를 반영한 브리프 재생성 (2단계 체인)
+  async function restartPipeline(feedback: string) {
+    setBusy("파이프라인 재시작");
+    setError("");
+    try {
+      const r1 = await fetch(`/api/admin/pipeline/${sessionId}/restart`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "restart", feedback }),
+      });
+      if (!r1.ok) {
+        const d = await r1.json().catch(() => ({}));
+        setError(d.error ?? "재시작 실패");
+        return;
+      }
+      setBusy("브리프 재생성 (기각 사유 반영)");
+      const r2 = await fetch(`/api/admin/pipeline/${sessionId}/brief`, { method: "POST" });
+      if (!r2.ok) {
+        const d = await r2.json().catch(() => ({}));
+        setError(d.error ?? "브리프 재생성 실패 — 브리프 탭에서 [재생성]을 눌러주세요.");
+      } else {
+        flashNotice("✅ 재시작 완료 — 기각 사유가 반영된 새 브리프가 생성되었습니다");
+      }
+    } catch {
+      setError("재시작 중 오류가 발생했습니다.");
+    } finally {
+      setBusy(null);
+      await load();
+    }
   }
 
   // 전 방향 일괄 서치 (순차): 방향마다 Behance + AI 웹서치 실행, 실패 건은 건너뛰고 요약
@@ -427,6 +459,15 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   재생성
                 </button>
               </div>
+
+              <RestartPanel
+                brief={brief}
+                keepCount={concepts.filter((c) => c.starred || c.selected).length}
+                dropCount={concepts.filter((c) => !c.starred && !c.selected).length}
+                sessionId={sessionId}
+                busy={!!busy}
+                onRestart={restartPipeline}
+              />
             </>
           )}
         </section>
@@ -673,6 +714,29 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 {engines.length === 0 && <p className="mt-3 text-sm text-danger">⚠️ OPENAI_API_KEY / GEMINI_API_KEY가 없어 이미지 생성을 사용할 수 없습니다.</p>}
               </div>
 
+              {concepts.length > 0 && concepts.some((c) => !c.starred && !c.selected) && (
+                <div className="flex items-center justify-end gap-2">
+                  <span className="text-xs text-fg2/60">
+                    ⭐ 별표·선택 {concepts.filter((c) => c.starred || c.selected).length}개 보존
+                  </span>
+                  <button
+                    onClick={() => {
+                      const dropN = concepts.filter((c) => !c.starred && !c.selected).length;
+                      if (confirm(`⭐ 별표·선택 표시가 없는 시안 ${dropN}개를 삭제할까요? (브리프·레퍼런스·회차는 유지됩니다)`)) {
+                        run("시안 정리", () => fetch(`/api/admin/pipeline/${sessionId}/restart`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ mode: "prune" }),
+                        }));
+                      }
+                    }}
+                    disabled={!!busy}
+                    className="btn btn-ghost !min-h-8 !px-3 !py-1 text-xs"
+                  >
+                    🧹 별표·선택만 남기고 정리 ({concepts.filter((c) => !c.starred && !c.selected).length}개 삭제)
+                  </button>
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 {concepts.map((c) => (
                   <div key={c.id} className={`card !p-4 ${c.selected ? "!border-inv" : ""}`}>
@@ -685,6 +749,18 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       <a href={`/api/admin/pipeline/concepts/${c.id}/file?mode=dark&dl=1`} className="link-quiet">⬇ 다크 PNG</a>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => run("별표", () => fetch(`/api/admin/pipeline/concepts/${c.id}`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ starred: !c.starred }),
+                        }))}
+                        className={`text-lg leading-none ${c.starred ? "" : "opacity-30 hover:opacity-70"}`}
+                        title="남길 시안 표시 — 정리·재시작 시 보존됩니다"
+                        aria-label={c.starred ? "별표 해제" : "별표"}
+                      >
+                        ⭐
+                      </button>
                       <span className="badge badge-pending">{c.direction}</span>
                       <span className="badge badge-pending">{c.round}회차 · {engineLabel(c.engine)} #{c.version}</span>
                       {(c.palette ?? []).map((hex) => (
@@ -1203,6 +1279,76 @@ function CompareView({
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// 다시 시작 (위험 구역) — 기각 사유 필수, ⭐·선택 시안은 보존, 사유는 새 브리프에 반영
+function RestartPanel({
+  brief,
+  keepCount,
+  dropCount,
+  sessionId,
+  busy,
+  onRestart,
+}: {
+  brief: Brief;
+  keepCount: number;
+  dropCount: number;
+  sessionId: string;
+  busy: boolean;
+  onRestart: (feedback: string) => void;
+}) {
+  const [fb, setFb] = useState("");
+  const notes = brief.reset_notes ?? [];
+  return (
+    <div className="card !border-danger/25">
+      <h2 className="text-xl text-fg">🧨 다시 시작</h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-fg2">
+        <strong className="text-fg">브리프의 해석 자체가 잘못됐을 때</strong> 사용하세요. 시안만 아쉽다면 다음 회차·셀프 리파인·역제안 방향을
+        먼저 권합니다. 실행 시:
+      </p>
+      <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-fg2">
+        <li>⭐ 별표·선택 시안 <strong className="text-fg">{keepCount}개 보존</strong>, 나머지 시안 {dropCount}개 삭제</li>
+        <li>선택하지 않은 레퍼런스 삭제, 회차는 1회차로 리셋</li>
+        <li>입력한 기각 사유를 <strong className="text-fg">반드시 피할 것</strong>으로 반영해 브리프를 새로 생성</li>
+      </ul>
+      {notes.length > 0 && (
+        <div className="mt-3 rounded-(--radius-xs) bg-base/40 px-3 py-2 text-xs text-fg2">
+          <strong className="text-fg">이전 기각 사유</strong>
+          {notes.map((n, i) => (
+            <p key={i} className="mt-1">
+              {i + 1}. {n.feedback} <span className="text-fg2/50">({new Date(n.created_at).toLocaleDateString("ko-KR")})</span>
+            </p>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          value={fb}
+          onChange={(e) => setFb(e.target.value)}
+          placeholder="무엇이 마음에 들지 않았나요? (필수) — 예: 전체적으로 너무 차분하고 병원스러움"
+          className="input min-w-64 flex-1 !py-1.5 text-sm"
+          disabled={busy}
+        />
+        <a
+          href={`/api/admin/pipeline/${sessionId}/export`}
+          className="btn btn-ghost shrink-0 !min-h-9 !py-1.5 text-xs"
+          title="초기화 전 현재 결과를 ZIP으로 백업"
+        >
+          📦 백업
+        </a>
+        <button
+          onClick={() =>
+            confirm(`정말 다시 시작할까요?\n\n보존: ⭐·선택 시안 ${keepCount}개\n삭제: 시안 ${dropCount}개 + 미선택 레퍼런스\n\n삭제된 이미지는 복구할 수 없습니다.`) &&
+            (onRestart(fb.trim()), setFb(""))
+          }
+          disabled={busy || !fb.trim()}
+          className="btn shrink-0 !min-h-9 !py-1.5 text-xs !bg-danger/15 !text-danger hover:!bg-danger/25"
+        >
+          🧨 다시 시작
+        </button>
       </div>
     </div>
   );
