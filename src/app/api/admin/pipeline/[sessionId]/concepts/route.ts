@@ -211,7 +211,9 @@ ${optionLines.length ? `\n## 관리자 옵션 (최우선 반영)\n${optionLines.
     });
     composed = extractJSON(text);
   } else {
-    const refineMode = round > 1 && baseConcept;
+    // 발전 기반 이미지 다운로드가 실패했다면 refine 모드를 포기한다 —
+    // 프롬프트가 "마지막 첨부 = 선정 시안"이라 주장하는데 실제로는 다른 이미지가 되는 오인 방지
+    const refineMode = round > 1 && baseConcept && baseImages.length > 0;
 
     // 선택 레퍼런스의 실제 이미지를 비전 입력으로 — 텍스트 요약이 아니라 조형을 직접 분석하게 한다
     const refImages = (
