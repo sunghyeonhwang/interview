@@ -52,8 +52,10 @@ export async function POST(req: NextRequest) {
   }
   if (!images.length) return NextResponse.json({ error: "시안 이미지를 불러오지 못했습니다." }, { status: 500 });
 
-  const text = await claudeCall({
-    system: `너는 독립 브랜드 리뷰 보드다. 시안 제작에 관여하지 않은 제3자 시점으로, 주어진 기준에 따라 공정하게 채점한다.
+  let text: string;
+  try {
+    text = await claudeCall({
+      system: `너는 독립 브랜드 리뷰 보드다. 시안 제작에 관여하지 않은 제3자 시점으로, 주어진 기준에 따라 공정하게 채점한다.
 규칙:
 - 각 기준을 0~10점으로 채점하고, 점수마다 이미지에서 관찰한 구체적 근거를 쓴다. 총점만으로 결론 내리지 않는다.
 - 첫 번째 이미지는 라이트 모드, 두 번째는 다크 모드 버전이다. 가독성 평가에 둘 다 반영한다.
@@ -72,10 +74,13 @@ export async function POST(req: NextRequest) {
 ${CRITERIA.map((c) => `- ${c.criterion} (가중치 ${c.weight})${c.hint ? `: ${c.hint}` : ""}`).join("\n")}
 
 이미지를 관찰하고 기준별로 채점해 JSON으로 출력하라.`,
-    images,
-    schema: EVAL_SCHEMA,
-    effort: "medium",
-  });
+      images,
+      schema: EVAL_SCHEMA,
+      effort: "medium",
+    });
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "평가 실패" }, { status: 500 });
+  }
 
   const parsed = extractJSON<{ scores: { criterion: string; score: number; reason: string }[]; summary: string }>(text);
 

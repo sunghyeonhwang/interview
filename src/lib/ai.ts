@@ -74,7 +74,16 @@ export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
       ],
     }),
   });
-  const message = await stream.finalMessage();
+  let message: Anthropic.Message;
+  try {
+    message = await stream.finalMessage();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/credit balance is too low/i.test(msg)) {
+      throw new Error("Anthropic API 크레딧이 소진되었습니다 — console.anthropic.com → Plans & Billing에서 충전 후 다시 시도해주세요.");
+    }
+    throw e;
+  }
 
   if (message.stop_reason === "refusal") {
     throw new Error("요청이 안전 정책에 의해 거부되었습니다. 프롬프트를 수정해 다시 시도해주세요.");
