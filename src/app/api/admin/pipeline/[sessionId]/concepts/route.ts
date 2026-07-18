@@ -76,7 +76,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     direction?: string;
     engine?: ImageEngine;
     prompt_override?: string;
-    options?: { logo_type?: string; color_hint?: string; extra?: string };
+    options?: { logo_type?: string; color_hint?: string; extra?: string; geometry?: string };
     variant_of?: string; // 기존 시안 id — 지정 시 해당 시안의 미세 변형을 생성
     refine?: boolean; // 셀프 리파인: 1차 결과를 AI가 비평 → 개선 프롬프트로 1회 재생성
   };
@@ -190,9 +190,15 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // 1) 프롬프트 + 제작 의도 구성
+  const GEOMETRY_RULES: Record<string, string> = {
+    golden:
+      "- 비례 체계: 황금비(1:1.618) 기반 기하 구성 — 주요 요소의 크기 관계·간격·분할을 황금비 수열로 설계하고, 광학 보정(시각적 무게 균형)을 포함할 것. 프롬프트에 'golden ratio geometric construction' 지시를 명시할 것",
+    grid: "- 비례 체계: 정수비 그리드 기반 기하 구성 — 일관된 모듈 단위(1:2:3:4)와 통일된 코너 반경으로 설계할 것. 프롬프트에 'consistent modular grid construction' 지시를 명시할 것",
+  };
   const optionLines = [
     options?.logo_type && `- 로고 유형: ${options.logo_type} 중심으로 구성할 것`,
     options?.color_hint && `- 컬러 지시: ${options.color_hint} — 팔레트에 반드시 반영할 것`,
+    options?.geometry && GEOMETRY_RULES[options.geometry],
     options?.extra && `- 추가 요청: ${options.extra}`,
   ].filter(Boolean);
 

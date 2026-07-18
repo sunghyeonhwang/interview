@@ -29,10 +29,12 @@ export async function POST(req: NextRequest) {
 규칙:
 - 이미지를 픽셀 단위로 트레이싱하지 말고, 조형 언어(형태·비례·색)를 파악해 단순하고 확장 가능한 벡터로 재구성한다.
 - viewBox 사용, 불필요한 그룹·필터 금지, 색상은 팔레트 HEX로 명시.
+- 원 프롬프트에 비례 체계 지시(golden ratio / modular grid)가 있으면, SVG 좌표·크기·간격을 그 수치 체계로 정확히 구성한다 (예: 황금비면 요소 치수를 1, 1.618, 2.618… 비율로).
 - 텍스트(브랜드명)가 있으면 <text> 대신 단순한 형태로 근사하거나 생략 가능 여부를 판단해 로고 마크 중심으로.
 - 출력은 오직 <svg ...>...</svg> 코드만. 설명 금지.`,
       prompt: `이 시안의 제작 의도: ${concept.rationale ?? "(없음)"}
 팔레트: ${JSON.stringify(concept.palette ?? [])}
+원 이미지 프롬프트 발췌: ${((concept.prompt as string) ?? "").slice(0, 400)}
 
 이 시안을 SVG 로고로 재작성하라.`,
       images: [base64],

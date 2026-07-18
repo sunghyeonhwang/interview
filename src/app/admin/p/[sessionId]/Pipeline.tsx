@@ -102,6 +102,7 @@ interface GenOptions {
   logo_type: string;
   color_hint: string;
   extra: string;
+  geometry: string; // "" 자동 | golden 황금비 | grid 정수비 그리드
 }
 const TABS: { key: Tab; label: string }[] = [
   { key: "brief", label: "1. 브리프" },
@@ -122,7 +123,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
     setNotice(msg);
     setTimeout(() => setNotice((n) => (n === msg ? "" : n)), 6000);
   }
-  const [genOpts, setGenOpts] = useState<GenOptions>({ logo_type: "", color_hint: "", extra: "" });
+  const [genOpts, setGenOpts] = useState<GenOptions>({ logo_type: "", color_hint: "", extra: "", geometry: "" });
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
   const [autoEval, setAutoEval] = useState(false);
@@ -332,6 +333,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
               logo_type: genOpts.logo_type || undefined,
               color_hint: genOpts.color_hint || undefined,
               extra: genOpts.extra || undefined,
+              geometry: genOpts.geometry || undefined,
             },
           }),
         });
@@ -687,6 +689,17 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     <option value="엠블럼/배지형">엠블럼·배지형</option>
                     <option value="이니셜/모노그램">이니셜·모노그램</option>
                   </select>
+                  <select
+                    value={genOpts.geometry}
+                    onChange={(e) => setGenOpts((o) => ({ ...o, geometry: e.target.value }))}
+                    className="select"
+                    aria-label="비례 체계"
+                    title="시안의 기하학적 구성 원칙 — SVG 재작성 시에도 반영됩니다"
+                  >
+                    <option value="">비례 체계 — 자동</option>
+                    <option value="golden">황금비 (1:1.618)</option>
+                    <option value="grid">정수비 그리드</option>
+                  </select>
                   <input
                     value={genOpts.color_hint}
                     onChange={(e) => setGenOpts((o) => ({ ...o, color_hint: e.target.value }))}
@@ -722,6 +735,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                                   logo_type: genOpts.logo_type || undefined,
                                   color_hint: genOpts.color_hint || undefined,
                                   extra: genOpts.extra || undefined,
+                                  geometry: genOpts.geometry || undefined,
                                 },
                               }),
                             }))}
