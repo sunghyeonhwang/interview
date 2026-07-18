@@ -42,8 +42,64 @@ interface ClaudeCallOpts {
   effort?: "low" | "medium" | "high";
 }
 
+// Claude 실패(크레딧 소진·장애 등) 시 폴백: OpenAI 최고 추론 모델 (기본 gpt-5.6-sol, reasoning high)
+// OPENAI_FALLBACK_MODEL 환경변수로 교체 가능. 모델 오류 시 체인의 다음 모델로 넘어간다.
+const OPENAI_FALLBACK_MODELS = [...new Set([process.env.OPENAI_FALLBACK_MODEL ?? "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.2"])];
+
+async function openaiReasoningCall(model: string, opts: ClaudeCallOpts, withSchema: boolean): Promise<string> {
+  const client = new OpenAI();
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    ...(opts.images ?? []).map((img): OpenAI.Chat.Completions.ChatCompletionContentPart => {
+      const o = typeof img === "string" ? { data: img, media_type: sniffBase64(img) } : img;
+      return { type: "image_url", image_url: { url: `data:${o.media_type};base64,${o.data}` } };
+    }),
+    { type: "text", text: opts.prompt },
+  ];
+  const res = await client.chat.completions.create({
+    model,
+    reasoning_effort: "high",
+    max_completion_tokens: opts.maxTokens ?? 16000,
+    messages: [
+      { role: "system", content: opts.system },
+      { role: "user", content },
+    ],
+    ...(withSchema && opts.schema
+      ? {
+          response_format: {
+            type: "json_schema" as const,
+            json_schema: { name: "output", strict: true, schema: opts.schema },
+          },
+        }
+      : {}),
+  });
+  const out = res.choices?.[0]?.message?.content ?? "";
+  if (!out) throw new Error("OpenAI 폴백 응답이 비어 있습니다.");
+  return out;
+}
+
+async function openaiFallback(opts: ClaudeCallOpts): Promise<string> {
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY가 없어 폴백할 수 없습니다.");
+  let lastError: unknown = null;
+  for (const model of OPENAI_FALLBACK_MODELS) {
+    try {
+      return await openaiReasoningCall(model, opts, true);
+    } catch (e) {
+      // 스키마 비호환(strict) 등 형식 문제면 자유 출력으로 재시도 — extractJSON이 파싱한다
+      if (/schema|response_format/i.test(String(e))) {
+        try {
+          return await openaiReasoningCall(model, opts, false);
+        } catch (e2) {
+          lastError = e2;
+          continue;
+        }
+      }
+      lastError = e;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
-  const client = anthropic();
   const content: Anthropic.ContentBlockParam[] = [
     ...(opts.images ?? []).map((img): Anthropic.ContentBlockParam => {
       // 문자열 입력은 실제 바이트를 스니핑해 미디어 타입 판별 (PNG 가정 금지)
@@ -53,33 +109,46 @@ export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
     { type: "text", text: opts.prompt },
   ];
 
-  const stream = client.messages.stream({
-    model: CLAUDE_MODEL,
-    max_tokens: opts.maxTokens ?? 16000,
-    thinking: { type: "adaptive" },
-    system: opts.system,
-    messages: [{ role: "user", content }],
-    output_config: {
-      effort: opts.effort ?? "high",
-      ...(opts.schema && { format: { type: "json_schema" as const, schema: opts.schema } }),
-    },
-    ...(opts.useWebSearch && {
-      tools: [
-        {
-          type: "web_search_20260209" as const,
-          name: "web_search" as const,
-          max_uses: 4,
-          blocked_domains: ["pinterest.com", "kr.pinterest.com", "pinterest.co.kr", "pin.it"],
-        },
-      ],
-    }),
-  });
   let message: Anthropic.Message;
   try {
+    const client = anthropic();
+    const stream = client.messages.stream({
+      model: CLAUDE_MODEL,
+      max_tokens: opts.maxTokens ?? 16000,
+      thinking: { type: "adaptive" },
+      system: opts.system,
+      messages: [{ role: "user", content }],
+      output_config: {
+        effort: opts.effort ?? "high",
+        ...(opts.schema && { format: { type: "json_schema" as const, schema: opts.schema } }),
+      },
+      ...(opts.useWebSearch && {
+        tools: [
+          {
+            type: "web_search_20260209" as const,
+            name: "web_search" as const,
+            max_uses: 4,
+            blocked_domains: ["pinterest.com", "kr.pinterest.com", "pinterest.co.kr", "pin.it"],
+          },
+        ],
+      }),
+    });
     message = await stream.finalMessage();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (/credit balance is too low/i.test(msg)) {
+    const creditIssue = /credit balance is too low/i.test(msg);
+    // Claude 실패 → OpenAI 고추론 모델(gpt-5.2, reasoning high)로 폴백
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        return await openaiFallback(opts);
+      } catch (fe) {
+        const femsg = fe instanceof Error ? fe.message : String(fe);
+        throw new Error(
+          `Claude 실패(${creditIssue ? "크레딧 소진" : msg.slice(0, 120)}), OpenAI 폴백도 실패(${femsg.slice(0, 120)})`
+        );
+      }
+    }
+    if (creditIssue) {
       throw new Error("Anthropic API 크레딧이 소진되었습니다 — console.anthropic.com → Plans & Billing에서 충전 후 다시 시도해주세요.");
     }
     throw e;
