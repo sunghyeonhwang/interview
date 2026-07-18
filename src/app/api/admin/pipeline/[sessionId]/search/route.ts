@@ -76,10 +76,47 @@ function faviconFor(url: string): string {
   }
 }
 
-// URL 생존 검증 + og:image 해석.
-// 반환: og 이미지 URL | favicon(살아있지만 이미지 추출 실패) | null(404 등 죽은 링크 — 레퍼런스에서 제외)
+// Jina Reader 경유 fetch (Vercel IP·봇 차단 우회) — 무료 티어 20회/분 대비 호출 간격 + 429 재시도.
+// JINA_API_KEY 환경변수가 있으면 사용 (한도 상향).
+let lastJinaCall = 0;
+async function jinaFetch(url: string, ms = 25_000): Promise<string> {
+  const wait = lastJinaCall + 1500 - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  const headers: Record<string, string> = {};
+  if (process.env.JINA_API_KEY) headers.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    lastJinaCall = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const res = await fetch(`https://r.jina.ai/${url}`, { signal: controller.signal, headers });
+      if (res.status === 429) {
+        await new Promise((r) => setTimeout(r, 4500));
+        continue;
+      }
+      if (!res.ok) throw new Error(`jina ${res.status}`);
+      return await res.text();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error("jina rate limited");
+}
+
+// Jina 마크다운에서 대표 이미지 추출 (Behance CDN 우선)
+function imageFromMarkdown(md: string): string {
+  return (
+    md.match(/https:\/\/mir-s3-cdn-cf\.behance\.net\/[^)\s"']+/)?.[0] ??
+    md.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+\.(?:png|jpe?g|webp|gif)[^)\s]*)\)/i)?.[1] ??
+    md.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/)?.[1] ??
+    ""
+  );
+}
+
+// URL 생존 검증 + 대표 이미지 해석.
+// 반환: 이미지 URL | favicon(살아있지만 이미지 추출 실패) | null(404 등 죽은 링크 — 레퍼런스에서 제외)
 async function verifyAndResolve(url: string): Promise<string | null> {
-  // 1) 직접 접근 (브라우저급 헤더)
+  // 1) 직접 접근 (브라우저급 헤더) — 차단 없는 일반 사이트용
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6500);
@@ -88,35 +125,36 @@ async function verifyAndResolve(url: string): Promise<string | null> {
     if ([404, 410].includes(res.status)) return null; // AI가 지어낸 죽은 링크
     if (res.ok) {
       const og = extractOg((await res.text()).slice(0, 300_000), url);
-      return og || faviconFor(url);
+      if (og) return og;
     }
     // 403/429 등 봇 차단 의심 → Jina 경유로 재시도
   } catch {
     /* 네트워크 실패 → Jina 시도 */
   }
-  // 2) Jina Reader 경유 (데이터센터 IP·봇 차단 사이트 대응, API 키 불필요)
+  // 2) Jina Reader 마크다운 경유 (Behance 등 데이터센터 IP 차단 사이트 대응)
   try {
-    const html = await fetchText(`https://r.jina.ai/${url}`, 12_000, { "X-Return-Format": "html" });
-    const og = extractOg(html.slice(0, 300_000), url);
-    return og || faviconFor(url);
-  } catch (e) {
-    // Jina가 대상 404를 그대로 보고하면 죽은 링크로 판정
-    if (/\b40[34]\b|not found/i.test(String(e))) return null;
+    const md = await jinaFetch(url, 20_000);
+    if (/Warning: Target URL returned error 404/i.test(md)) return null;
+    return imageFromMarkdown(md) || faviconFor(url);
+  } catch {
     return faviconFor(url);
   }
 }
 
-// Behance 직접 검색: 서버 렌더링된 검색 페이지를 파싱 (Playwright·API키 불필요)
-async function behanceSearch(query: string): Promise<(FoundRef & { image_url: string })[]> {
+// pid → 이미지 매칭 공통 로직: CDN 파일명에 프로젝트 ID가 포함됨, 고해상(max_808) 우선
+function pickImage(images: string[], pid: string): string {
+  const candidates = images.filter((u) => u.includes(pid));
+  return candidates.find((u) => u.includes("max_808")) ?? candidates[0] ?? "";
+}
+
+// Behance 검색 ① 직접 HTML 파싱 (로컬·비차단 환경에서 빠름)
+async function behanceSearchDirect(query: string): Promise<(FoundRef & { image_url: string })[]> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const res = await fetch(
       `https://www.behance.net/search/projects?search=${encodeURIComponent(query)}`,
-      {
-        signal: controller.signal,
-        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
-      }
+      { signal: controller.signal, headers: BROWSER_HEADERS }
     );
     if (!res.ok) return [];
     const html = await res.text();
@@ -127,14 +165,11 @@ async function behanceSearch(query: string): Promise<(FoundRef & { image_url: st
     for (const [, path, pid, title] of links) {
       if (seen.has(pid)) continue;
       seen.add(pid);
-      // 이미지 파일명에 프로젝트 ID 포함 — 고해상 변형(max_808) 우선
-      const candidates = images.filter((u) => u.includes(pid));
-      const image = candidates.find((u) => u.includes("max_808")) ?? candidates[0] ?? "";
       out.push({
         brand_name: title.replace(/&amp;/g, "&").replace(/&#39;/g, "'"),
         url: `https://www.behance.net${path}`,
         summary: `Behance 프로젝트 — 검색어: ${query}`,
-        image_url: image,
+        image_url: pickImage(images, pid),
       });
       if (out.length >= 12) break;
     }
@@ -144,6 +179,42 @@ async function behanceSearch(query: string): Promise<(FoundRef & { image_url: st
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Behance 검색 ② Jina 마크다운 파싱 (Vercel 등 Behance가 차단하는 IP에서 사용)
+async function behanceSearchViaJina(query: string): Promise<(FoundRef & { image_url: string })[]> {
+  try {
+    const md = await jinaFetch(
+      `https://www.behance.net/search/projects?search=${encodeURIComponent(query)}`,
+      30_000
+    );
+    // [제목](gallery URL) 형태의 링크 — 중첩 이미지 링크([![...)는 브래킷 제외 규칙으로 걸러짐
+    const links = [...md.matchAll(/\[([^[\]]{2,100})\]\(https:\/\/www\.behance\.net\/gallery\/(\d+)\/([^)?\s]+)[^)]*\)/g)];
+    const images = [...new Set([...md.matchAll(/(https:\/\/mir-s3-cdn-cf\.behance\.net\/[^)\s"']+)/g)].map((m) => m[1]))];
+    const seen = new Set<string>();
+    const out: (FoundRef & { image_url: string })[] = [];
+    for (const [, title, pid, slug] of links) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      out.push({
+        brand_name: title.replace(/&amp;/g, "&").replace(/&#39;/g, "'").trim(),
+        url: `https://www.behance.net/gallery/${pid}/${slug}`,
+        summary: `Behance 프로젝트 — 검색어: ${query}`,
+        image_url: pickImage(images, pid),
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+// Behance 검색: 직접 시도 → 결과 없으면(차단 환경) Jina 경유
+async function behanceSearch(query: string): Promise<(FoundRef & { image_url: string })[]> {
+  const direct = await behanceSearchDirect(query);
+  if (direct.length) return direct;
+  return behanceSearchViaJina(query);
 }
 
 // 방향별 레퍼런스(벤치마크) 서치 — source: "claude"(AI 웹서치) | "behance"(직접 파싱)
@@ -185,7 +256,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       const html = await fetchText(target, 6500, BROWSER_HEADERS);
       title = html.match(/<title[^>]*>([^<]{1,150})/i)?.[1]?.trim() ?? "";
     } catch {
-      /* 제목 없이 진행 */
+      // 직접 접근 차단 시 Jina 마크다운의 Title: 라인 사용
+      try {
+        title = (await jinaFetch(target, 20_000)).match(/^Title:\s*(.{1,150})$/m)?.[1]?.trim() ?? "";
+      } catch {
+        /* 제목 없이 진행 */
+      }
     }
     const brandName =
       title.replace(/&amp;/g, "&").replace(/\s*(::|[|–—-])\s*(Behance|BP&O|Brand New|Under ?Consideration).*$/i, "").trim().slice(0, 60) ||
@@ -209,7 +285,9 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   // ── Behance 직접 검색 경로 (Claude 불필요) ──
   if (source === "behance") {
-    const results = (await Promise.all(queries.slice(0, 2).map(behanceSearch))).flat();
+    // Jina 폴백의 호출 간격 유지를 위해 쿼리를 순차 실행
+    const results: (FoundRef & { image_url: string })[] = [];
+    for (const q of queries.slice(0, 2)) results.push(...(await behanceSearch(q)));
     const seen = new Set<string>();
     const rows = results
       .filter((r) => (seen.has(r.url) ? false : (seen.add(r.url), true)))
@@ -255,25 +333,25 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "검색 결과 파싱에 실패했습니다. 다시 시도해주세요." }, { status: 502 });
   }
 
-  // Pinterest 이중 차단 + URL 생존 검증 + 이미지 해석 (병렬) — 죽은 링크(404)는 제외
+  // Pinterest 이중 차단 + URL 생존 검증 + 이미지 해석 — Jina 속도 제한 준수를 위해 순차 처리
   const cleaned = found.filter((r) => r.url && !/pinterest|pin\.it/i.test(r.url));
-  const withImages = (
-    await Promise.all(
-      cleaned.map(async (r) => {
-        const image = await verifyAndResolve(r.url);
-        if (image === null) return null; // 404 — AI가 지어낸 링크
-        return {
-          brief_id: brief.id,
-          direction: direction ?? "custom",
-          brand_name: r.brand_name,
-          url: r.url,
-          summary: r.summary,
-          image_url: image,
-          image_path: await snapshotImage(client, brief.id, image),
-        };
-      })
-    )
-  ).filter((r): r is NonNullable<typeof r> => r !== null);
+  const withImages: {
+    brief_id: string; direction: string; brand_name: string; url: string;
+    summary: string; image_url: string; image_path: string | null;
+  }[] = [];
+  for (const r of cleaned) {
+    const image = await verifyAndResolve(r.url);
+    if (image === null) continue; // 404 — AI가 지어낸 링크
+    withImages.push({
+      brief_id: brief.id,
+      direction: direction ?? "custom",
+      brand_name: r.brand_name,
+      url: r.url,
+      summary: r.summary,
+      image_url: image,
+      image_path: await snapshotImage(client, brief.id, image),
+    });
+  }
 
   if (!withImages.length) return NextResponse.json({ references: [] });
   const { data, error } = await client.from("iv_references").insert(withImages).select();
