@@ -46,6 +46,28 @@ function extractOg(html: string, baseUrl: string): string {
   }
 }
 
+// 썸네일을 Storage에 스냅샷 — 외부 링크가 죽어도 유지되고, 시안 생성 시 재다운로드가 없다
+async function snapshotImage(client: ReturnType<typeof db>, briefId: string, imageUrl: string): Promise<string | null> {
+  if (!imageUrl || imageUrl.includes("s2/favicons")) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(imageUrl, { signal: controller.signal, headers: BROWSER_HEADERS });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const ct = (res.headers.get("content-type") ?? "").split(";")[0].trim();
+    const ext = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" }[ct];
+    if (!ext) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 6 * 1024 * 1024) return null;
+    const path = `refs/${briefId}/${crypto.randomUUID().slice(0, 8)}.${ext}`;
+    const { error } = await client.storage.from("iv-concepts").upload(path, buf, { contentType: ct, upsert: true });
+    return error ? null : path;
+  } catch {
+    return null;
+  }
+}
+
 function faviconFor(url: string): string {
   try {
     return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=256`;
@@ -150,6 +172,41 @@ export async function POST(req: NextRequest, { params }: Params) {
   const queries: string[] = query ? [query] : (dir?.search_queries ?? []);
   if (!queries.length) return NextResponse.json({ error: "검색 쿼리가 없습니다." }, { status: 400 });
 
+  // ── 수동 등록: 운영자가 아는 사례 URL을 직접 추가 (query 필드 = URL) ──
+  if (source === "manual") {
+    const target = (query ?? "").trim();
+    if (!/^https?:\/\//i.test(target)) {
+      return NextResponse.json({ error: "http(s)로 시작하는 URL을 입력하세요." }, { status: 400 });
+    }
+    const image = await verifyAndResolve(target);
+    if (image === null) return NextResponse.json({ error: "접속할 수 없는 링크입니다 (404)." }, { status: 400 });
+    let title = "";
+    try {
+      const html = await fetchText(target, 6500, BROWSER_HEADERS);
+      title = html.match(/<title[^>]*>([^<]{1,150})/i)?.[1]?.trim() ?? "";
+    } catch {
+      /* 제목 없이 진행 */
+    }
+    const brandName =
+      title.replace(/&amp;/g, "&").replace(/\s*(::|[|–—-])\s*(Behance|BP&O|Brand New|Under ?Consideration).*$/i, "").trim().slice(0, 60) ||
+      new URL(target).hostname;
+    const imagePath = await snapshotImage(client, brief.id, image);
+    const { data, error } = await client
+      .from("iv_references")
+      .insert({
+        brief_id: brief.id,
+        direction: direction ?? "custom",
+        brand_name: brandName,
+        url: target,
+        summary: "직접 추가한 레퍼런스",
+        image_url: image,
+        image_path: imagePath,
+      })
+      .select();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ references: data });
+  }
+
   // ── Behance 직접 검색 경로 (Claude 불필요) ──
   if (source === "behance") {
     const results = (await Promise.all(queries.slice(0, 2).map(behanceSearch))).flat();
@@ -165,7 +222,10 @@ export async function POST(req: NextRequest, { params }: Params) {
         image_url: (r as { image_url?: string }).image_url ?? "",
       }));
     if (!rows.length) return NextResponse.json({ references: [] });
-    const { data, error } = await client.from("iv_references").insert(rows).select();
+    const withSnaps = await Promise.all(
+      rows.map(async (r) => ({ ...r, image_path: await snapshotImage(client, brief.id, r.image_url) }))
+    );
+    const { data, error } = await client.from("iv_references").insert(withSnaps).select();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ references: data });
   }
@@ -209,6 +269,7 @@ export async function POST(req: NextRequest, { params }: Params) {
           url: r.url,
           summary: r.summary,
           image_url: image,
+          image_path: await snapshotImage(client, brief.id, image),
         };
       })
     )

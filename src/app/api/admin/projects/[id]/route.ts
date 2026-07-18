@@ -45,6 +45,8 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
       const { data: mockups } = await client.from("iv_mockups").select("image_path").in("concept_id", conceptIds);
       for (const m of mockups ?? []) if (m.image_path) removals.push(m.image_path);
     }
+    const { data: refs } = await client.from("iv_references").select("image_path").eq("brief_id", brief.id);
+    for (const r of refs ?? []) if (r.image_path) removals.push(r.image_path);
   }
   if (removals.length) await client.storage.from("iv-concepts").remove(removals);
 

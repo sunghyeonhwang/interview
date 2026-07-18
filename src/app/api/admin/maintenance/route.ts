@@ -11,10 +11,11 @@ export async function POST() {
   const client = db();
 
   // DB가 참조하는 모든 스토리지 경로
-  const [{ data: concepts }, { data: projects }, { data: mockups }] = await Promise.all([
+  const [{ data: concepts }, { data: projects }, { data: mockups }, { data: refs }] = await Promise.all([
     client.from("iv_concepts").select("image_light_path, image_dark_path"),
     client.from("iv_projects").select("asset_paths"),
     client.from("iv_mockups").select("image_path"),
+    client.from("iv_references").select("image_path"),
   ]);
   const referenced = new Set<string>();
   for (const c of concepts ?? []) {
@@ -23,6 +24,7 @@ export async function POST() {
   }
   for (const p of projects ?? []) for (const a of p.asset_paths ?? []) referenced.add(a);
   for (const m of mockups ?? []) if (m.image_path) referenced.add(m.image_path);
+  for (const r of refs ?? []) if (r.image_path) referenced.add(r.image_path);
 
   // 버킷 전체 파일 재귀 수집
   const cutoff = Date.now() - 30 * 60 * 1000;

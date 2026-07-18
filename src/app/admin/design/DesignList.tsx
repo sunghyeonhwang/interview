@@ -10,11 +10,33 @@ interface Item {
   questionnaire_title: string;
   submitted_at: string | null;
   has_brief: boolean;
+  last_activity: string | null;
   current_round: number;
   references: number;
   concepts: number;
   evaluations: number;
   svgs: number;
+}
+
+// 상대 날짜 표기
+function relDate(d: string): string {
+  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
+  return days <= 0 ? "오늘" : days === 1 ? "어제" : `${days}일 전`;
+}
+
+const FILTERS = [
+  { key: "all", label: "전체" },
+  { key: "active", label: "진행 중" },
+  { key: "done", label: "SVG 완료" },
+  { key: "new", label: "시작 전" },
+] as const;
+type FilterKey = (typeof FILTERS)[number]["key"];
+
+function matchFilter(i: Item, f: FilterKey): boolean {
+  if (f === "done") return i.svgs > 0;
+  if (f === "active") return i.has_brief && i.svgs === 0;
+  if (f === "new") return !i.has_brief;
+  return true;
 }
 
 function stage(i: Item): { text: string; cls: string } {
@@ -127,6 +149,7 @@ export default function DesignList() {
   const [items, setItems] = useState<Item[] | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [cleanMsg, setCleanMsg] = useState("");
+  const [filter, setFilter] = useState<FilterKey>("all");
 
   const load = () =>
     fetch("/api/admin/pipeline").then(async (r) => {
@@ -154,6 +177,22 @@ export default function DesignList() {
 
       {showNew && <NewProjectForm onCreated={() => { setShowNew(false); load(); }} />}
 
+      {items !== null && items.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {FILTERS.map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              className={`h-8 rounded-full px-3.5 text-xs font-semibold transition-colors duration-200 ${
+                filter === f.key ? "bg-key text-white" : "border border-line text-fg2 hover:text-fg"
+              }`}
+            >
+              {f.label} {f.key !== "all" && `(${items.filter((i) => matchFilter(i, f.key)).length})`}
+            </button>
+          ))}
+        </div>
+      )}
+
       {items === null ? (
         <p className="text-sm text-fg2">불러오는 중…</p>
       ) : items.length === 0 ? (
@@ -165,7 +204,7 @@ export default function DesignList() {
         </div>
       ) : (
         <ul className="card divide-y divide-line !p-0">
-          {items.map((i) => {
+          {items.filter((i) => matchFilter(i, filter)).map((i) => {
             const st = stage(i);
             return (
               <li key={i.session_id} className="group row-hover">
@@ -182,6 +221,7 @@ export default function DesignList() {
                     <span className="mt-0.5 block text-xs text-fg2">
                       {i.questionnaire_title}
                       {i.submitted_at && ` · ${new Date(i.submitted_at).toLocaleDateString("ko-KR")} ${i.type === "project" ? "생성" : "제출"}`}
+                      {i.last_activity && ` · 마지막 활동 ${relDate(i.last_activity)}`}
                     </span>
                   </span>
                   <span className="flex shrink-0 items-center gap-3">

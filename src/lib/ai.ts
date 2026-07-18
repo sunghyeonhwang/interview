@@ -16,6 +16,18 @@ export interface VisionImage {
   media_type: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 }
 
+/** 매직 바이트로 실제 이미지 포맷 판별 — 생성 엔진이 PNG 대신 JPEG를 반환하는 경우 대응 */
+export function sniffMediaType(buf: Buffer): VisionImage["media_type"] {
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
+  if (buf.subarray(0, 4).toString("latin1") === "RIFF") return "image/webp";
+  if (buf.subarray(0, 3).toString("latin1") === "GIF") return "image/gif";
+  return "image/png";
+}
+
+const sniffBase64 = (b64: string): VisionImage["media_type"] =>
+  sniffMediaType(Buffer.from(b64.slice(0, 24), "base64"));
+
 interface ClaudeCallOpts {
   system: string;
   prompt: string;
@@ -34,7 +46,8 @@ export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
   const client = anthropic();
   const content: Anthropic.ContentBlockParam[] = [
     ...(opts.images ?? []).map((img): Anthropic.ContentBlockParam => {
-      const o = typeof img === "string" ? { data: img, media_type: "image/png" as const } : img;
+      // 문자열 입력은 실제 바이트를 스니핑해 미디어 타입 판별 (PNG 가정 금지)
+      const o = typeof img === "string" ? { data: img, media_type: sniffBase64(img) } : img;
       return { type: "image", source: { type: "base64", media_type: o.media_type, data: o.data } };
     }),
     { type: "text", text: opts.prompt },
@@ -121,7 +134,7 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
       const res = inputImage
         ? await client.images.edit({
             model: "gpt-image-1",
-            image: await toFile(inputImage, "input.png", { type: "image/png" }),
+            image: await toFile(inputImage, `input.${sniffMediaType(inputImage) === "image/jpeg" ? "jpg" : "png"}`, { type: sniffMediaType(inputImage) }),
             prompt,
             size: "1024x1024",
             quality: "high",
@@ -152,7 +165,7 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
         model,
         contents: inputImage
           ? [
-              { inlineData: { mimeType: "image/png", data: inputImage.toString("base64") } },
+              { inlineData: { mimeType: sniffMediaType(inputImage), data: inputImage.toString("base64") } },
               { text: prompt },
             ]
           : prompt,

@@ -39,7 +39,36 @@ export async function POST(req: NextRequest) {
 
   const match = text.match(/<svg[\s\S]*<\/svg>/i);
   if (!match) return NextResponse.json({ error: "SVG 생성에 실패했습니다. 다시 시도해주세요." }, { status: 502 });
-  const svg = match[0];
+  let svg = match[0];
+
+  // 렌더 검증 루프: SVG를 실제로 렌더해 원본 시안과 비교 → 불일치하면 1회 수정
+  try {
+    const { Resvg } = await import("@resvg/resvg-js");
+    const render = (code: string) =>
+      new Resvg(code, { fitTo: { mode: "width", value: 512 }, background: "#ffffff" }).render().asPng();
+    const rendered = Buffer.from(render(svg)).toString("base64");
+
+    const verify = await claudeCall({
+      system: `너는 벡터 로고 QA 검수자다. 첫 번째 이미지는 원본 시안, 두 번째는 그것을 재작성한 SVG의 실제 렌더 결과다.
+SVG가 원본의 핵심 조형(형태·비례·구성·색)을 충실히 재현했는지 판정하고, 불충실하면 수정된 완전한 SVG 코드를 출력한다.
+충실하면 "OK"만 출력하고, 수정이 필요하면 다른 설명 없이 <svg ...>...</svg> 코드만 출력하라.`,
+      prompt: `원본 팔레트: ${JSON.stringify(concept.palette ?? [])}\n두 이미지를 비교해 판정하라.`,
+      images: [base64, rendered],
+      maxTokens: 32000,
+      effort: "medium",
+    });
+    const fixed = verify.match(/<svg[\s\S]*<\/svg>/i);
+    if (fixed) {
+      try {
+        render(fixed[0]); // 수정본이 유효하게 렌더되는지 확인 후 채택
+        svg = fixed[0];
+      } catch {
+        /* 수정본 파싱 실패 시 1차 SVG 유지 */
+      }
+    }
+  } catch {
+    /* 렌더 검증 실패 시 1차 SVG 그대로 저장 */
+  }
 
   const { count } = await client
     .from("iv_svgs")

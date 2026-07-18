@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
-import { generateImage, availableEngines, type ImageEngine } from "@/lib/ai";
+import { generateImage, availableEngines, sniffMediaType, type ImageEngine } from "@/lib/ai";
 
 export const maxDuration = 300;
 
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
   const path = `${concept.brief_id}/mockup-${kind}-${crypto.randomUUID().slice(0, 8)}.png`;
   const { error: upErr } = await client.storage
     .from("iv-concepts")
-    .upload(path, buf, { contentType: "image/png", upsert: true });
+    .upload(path, buf, { contentType: sniffMediaType(buf), upsert: true });
   if (upErr) return NextResponse.json({ error: `목업 저장 실패: ${upErr.message}` }, { status: 500 });
 
   const { data, error } = await client

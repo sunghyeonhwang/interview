@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.111.0",
     "@auth/core": "^0.41.2",
     "@google/genai": "^2.12.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@supabase/supabase-js": "^2.110.6",
     "jose": "^6.2.3",
     "jszip": "^3.10.1",

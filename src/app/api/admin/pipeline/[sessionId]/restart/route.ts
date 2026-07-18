@@ -55,15 +55,17 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   let refsRemoved = 0;
   if (mode === "restart") {
-    // 선택하지 않은 레퍼런스 정리
+    // 선택하지 않은 레퍼런스 정리 (스냅샷 이미지 포함)
     const { data: removedRefs, error: refErr } = await client
       .from("iv_references")
       .delete()
       .eq("brief_id", brief.id)
       .eq("selected", false)
-      .select("id");
+      .select("id, image_path");
     if (refErr) return NextResponse.json({ error: refErr.message }, { status: 500 });
     refsRemoved = removedRefs?.length ?? 0;
+    const refSnaps = (removedRefs ?? []).map((r) => r.image_path).filter(Boolean);
+    if (refSnaps.length) await client.storage.from("iv-concepts").remove(refSnaps);
 
     // 회차 리셋 + 기각 사유 누적 (브리프 내용은 이후 재생성 시 사유를 반영해 교체됨)
     const { error } = await client

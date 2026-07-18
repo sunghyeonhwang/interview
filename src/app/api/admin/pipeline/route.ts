@@ -67,8 +67,9 @@ export async function GET() {
 
   const briefBySession = new Map((briefs ?? []).filter((b) => b.session_id).map((b) => [b.session_id, b]));
   const briefByProject = new Map((briefs ?? []).filter((b) => b.project_id).map((b) => [b.project_id, b]));
-  const counts = (brief: { id: string; current_round: number } | undefined) => ({
+  const counts = (brief: { id: string; current_round: number; updated_at: string | null } | undefined) => ({
     has_brief: !!brief,
+    last_activity: brief?.updated_at ?? null,
     current_round: brief?.current_round ?? 1,
     references: brief ? (refCounts[brief.id] ?? 0) : 0,
     concepts: brief ? (conceptCounts[brief.id] ?? 0) : 0,

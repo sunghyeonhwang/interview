@@ -30,6 +30,7 @@ interface Reference {
   brand_name: string;
   url: string | null;
   image_url: string | null;
+  image_path: string | null;
   summary: string | null;
   selected: boolean;
   note: string | null;
@@ -126,6 +127,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   const [showCompare, setShowCompare] = useState(false);
   const [autoEval, setAutoEval] = useState(false);
   const [selfRefine, setSelfRefine] = useState(false);
+  const [cFilter, setCFilter] = useState({ dir: "", round: "", starred: false, sort: "recent" as "recent" | "score" });
   const [editingBrief, setEditingBrief] = useState(false);
   const [editingCriteria, setEditingCriteria] = useState(false);
 
@@ -138,6 +140,16 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 탭을 URL과 동기화 — 새로고침·재진입 시 보던 탭 유지, 딥링크 공유 가능
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && TABS.some((x) => x.key === t)) setTab(t as Tab);
+  }, []);
+  const changeTab = useCallback((t: Tab) => {
+    setTab(t);
+    window.history.replaceState(null, "", `?tab=${t}`);
+  }, []);
 
   async function run(label: string, fn: () => Promise<Response>) {
     setBusy(label);
@@ -186,6 +198,18 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
   // 예상 API 비용 (추정 단가 — 시안: 구성 $0.08 + 고품질 이미지 2장 $0.25, 평가 $0.10, SVG $0.12, 목업 $0.15)
   const estCost =
     (brief ? 0.15 : 0) + concepts.length * 0.33 + evaluations.length * 0.1 + svgs.length * 0.12 + mockups.length * 0.15;
+
+  // 시안 필터·정렬 적용 (생성순 정렬은 원래 순서 유지 — stable sort)
+  const visibleConcepts = concepts
+    .filter(
+      (c) =>
+        (!cFilter.dir || c.direction === cFilter.dir) &&
+        (!cFilter.round || String(c.round) === cFilter.round) &&
+        (!cFilter.starred || c.starred || c.selected)
+    )
+    .sort((a, b) =>
+      cFilter.sort === "score" ? (latestEval(b.id)?.total ?? -1) - (latestEval(a.id)?.total ?? -1) : 0
+    );
 
   const toggleCompare = (id: string) =>
     setCompareIds((ids) => {
@@ -384,7 +408,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
           return (
             <button
               key={t.key}
-              onClick={() => setTab(t.key)}
+              onClick={() => changeTab(t.key)}
               className={`h-9 rounded-full px-4 text-sm font-semibold transition-colors duration-200 ${
                 tab === t.key ? "bg-key text-white" : done ? "bg-inv/20 text-inv" : "border border-line text-fg2"
               }`}
@@ -552,13 +576,24 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                     body: JSON.stringify({ query: q, source }),
                   }))}
                 />
+                <ManualRefAdd
+                  disabled={!!busy}
+                  onAdd={(url) => run("레퍼런스 직접 추가", () => fetch(`/api/admin/pipeline/${sessionId}/search`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query: url, source: "manual" }),
+                  }))}
+                />
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {references.map((r) => (
                   <div key={r.id} className={`card !p-4 ${r.selected ? "!border-inv" : ""}`}>
                     <a href={r.url ?? "#"} target="_blank" rel="noreferrer">
-                      <RefImage src={r.image_url} name={r.brand_name} />
+                      <RefImage
+                        src={r.image_path ? `/api/admin/pipeline/references/${r.id}/img` : r.image_url}
+                        name={r.brand_name}
+                      />
                     </a>
                     <div className="mt-3 flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -740,6 +775,49 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   ⭐ 별표 = 남길 시안 표시 (정리·다시 시작 때 보존) · 선택 = SVG 생성과 다음 회차의 기준 · ⚖ 비교 = 최대 4개 나란히 보기
                 </p>
               )}
+
+              {/* 시안 필터·정렬 */}
+              {concepts.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={cFilter.dir}
+                    onChange={(e) => setCFilter((f) => ({ ...f, dir: e.target.value }))}
+                    className="select !min-h-9 w-auto !py-1.5 text-xs"
+                    aria-label="방향 필터"
+                  >
+                    <option value="">방향 전체</option>
+                    {[...new Set(concepts.map((c) => c.direction))].map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={cFilter.round}
+                    onChange={(e) => setCFilter((f) => ({ ...f, round: e.target.value }))}
+                    className="select !min-h-9 w-auto !py-1.5 text-xs"
+                    aria-label="회차 필터"
+                  >
+                    <option value="">회차 전체</option>
+                    {[...new Set(concepts.map((c) => c.round))].sort((a, b) => a - b).map((r) => (
+                      <option key={r} value={String(r)}>{r}회차</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => setCFilter((f) => ({ ...f, starred: !f.starred }))}
+                    className={`btn !min-h-9 !px-3 !py-1.5 text-xs ${cFilter.starred ? "btn-primary" : "btn-ghost"}`}
+                  >
+                    ⭐·선택만
+                  </button>
+                  <select
+                    value={cFilter.sort}
+                    onChange={(e) => setCFilter((f) => ({ ...f, sort: e.target.value as "recent" | "score" }))}
+                    className="select !min-h-9 w-auto !py-1.5 text-xs"
+                    aria-label="정렬"
+                  >
+                    <option value="recent">생성순</option>
+                    <option value="score">점수순</option>
+                  </select>
+                </div>
+              )}
               {concepts.length > 0 && concepts.some((c) => !c.starred && !c.selected) && (
                 <div className="flex items-center justify-end gap-2">
                   <span className="text-xs text-hint">
@@ -764,7 +842,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 </div>
               )}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {concepts.map((c) => (
+                {visibleConcepts.map((c) => (
                   <div key={c.id} className={`card !p-4 ${c.selected ? "!border-inv" : ""}`}>
                     <div className="grid grid-cols-2 gap-2">
                       <img src={`/api/admin/pipeline/concepts/${c.id}/file?mode=light`} alt="라이트" className="w-full rounded-(--radius-xs) bg-white" loading="lazy" />
@@ -795,6 +873,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                       </button>
                       <span className="badge badge-pending">{c.direction}</span>
                       <span className="badge badge-pending">{c.round}회차 · {engineLabel(c.engine)} #{c.version}</span>
+                      {latestEval(c.id) && <span className="badge badge-done">{latestEval(c.id)!.total}점</span>}
                       {(c.palette ?? []).map((hex) => (
                         <span key={hex} title={hex} className="inline-block h-5 w-5 rounded-full border border-line" style={{ background: hex }} />
                       ))}
@@ -849,6 +928,9 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                 ))}
               </div>
               {concepts.length === 0 && <p className="text-center text-sm text-fg2">아직 생성된 시안이 없습니다.</p>}
+              {concepts.length > 0 && visibleConcepts.length === 0 && (
+                <p className="text-center text-sm text-fg2">필터 조건에 맞는 시안이 없습니다.</p>
+              )}
             </>
           )}
         </section>
@@ -1164,7 +1246,7 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
       {(() => {
         const idx = TABS.findIndex((t) => t.key === tab);
         const go = (t: Tab) => {
-          setTab(t);
+          changeTab(t);
           window.scrollTo({ top: 0, behavior: "smooth" });
         };
         return (
@@ -1813,6 +1895,32 @@ function RefImage({ src, name }: { src: string | null; name: string }) {
       className="h-36 w-full rounded-(--radius-xs) bg-white object-cover"
       loading="lazy"
     />
+  );
+}
+
+// 운영자가 아는 사례 URL을 직접 레퍼런스로 등록
+function ManualRefAdd({ disabled, onAdd }: { disabled: boolean; onAdd: (url: string) => void }) {
+  const [url, setUrl] = useState("");
+  const fire = () => {
+    if (!url.trim()) return;
+    onAdd(url.trim());
+    setUrl("");
+  };
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      <input
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && fire()}
+        placeholder="아는 사례 URL 직접 추가 — 예: https://www.behance.net/gallery/…"
+        className="input min-w-60 flex-1"
+        disabled={disabled}
+        type="url"
+      />
+      <button onClick={fire} disabled={disabled || !url.trim()} className="btn btn-ghost shrink-0">
+        ➕ 직접 추가
+      </button>
+    </div>
   );
 }
 
