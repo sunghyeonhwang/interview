@@ -6,27 +6,30 @@ import { DEFAULT_CRITERIA } from "@/lib/criteria";
 
 export const maxDuration = 300;
 
-const EVAL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["scores", "summary"],
-  properties: {
-    scores: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["criterion", "score", "reason"],
-        properties: {
-          criterion: { type: "string" },
-          score: { type: "integer", description: "0~10" },
-          reason: { type: "string", description: "채점 근거 (한국어 1~2문장, 구체적으로)" },
+// 기준명을 enum으로 강제 — AI가 기준명을 다르게 쓰면 가중치 0으로 총점이 조용히 왜곡되는 것 방지
+function makeEvalSchema(criteriaNames: string[]) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["scores", "summary"],
+    properties: {
+      scores: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["criterion", "score", "reason"],
+          properties: {
+            criterion: { type: "string", enum: criteriaNames },
+            score: { type: "integer", minimum: 0, maximum: 10 },
+            reason: { type: "string", description: "채점 근거 (한국어 1~2문장, 구체적으로)" },
+          },
         },
       },
+      summary: { type: "string", description: "종합 평가 (한국어): 강점, 약점·리스크, 어떤 경우에 이 안을 선택할지 조건부 추천" },
     },
-    summary: { type: "string", description: "종합 평가 (한국어): 강점, 약점·리스크, 어떤 경우에 이 안을 선택할지 조건부 추천" },
-  },
-};
+  };
+}
 
 // 시안 1건 AI 평가: 브리프 + 라이트/다크 이미지(비전) → 기준별 채점 저장
 export async function POST(req: NextRequest) {
@@ -59,6 +62,7 @@ export async function POST(req: NextRequest) {
 규칙:
 - 각 기준을 0~10점으로 채점하고, 점수마다 이미지에서 관찰한 구체적 근거를 쓴다. 총점만으로 결론 내리지 않는다.
 - 첫 번째 이미지는 라이트 모드, 두 번째는 다크 모드 버전이다. 가독성 평가에 둘 다 반영한다.
+- 블라인드 평가: 제작 의도·설명은 주어지지 않는다. 오직 이미지에서 관찰한 것과 브리프만으로 판단한다.
 - 약점과 리스크를 감추지 않는다. 상표 유사 가능성은 "확인 필요" 수준으로만 지적한다 (법률 자문 아님).
 - summary는 조건부 추천 형식으로 끝낸다: "X를 우선한다면 이 안이 적합/부적합".`,
     prompt: `## 브리프
@@ -67,15 +71,14 @@ export async function POST(req: NextRequest) {
 피할 것: ${(brief?.content?.anti ?? []).join(", ")}
 
 ## 이 시안
-방향: ${concept.direction} / 엔진: ${concept.engine} v${concept.version}
-제작 의도: ${concept.rationale ?? "(없음)"}
+방향: ${concept.direction} (${concept.round ?? 1}회차)
 
 ## 평가 기준 (기준명은 정확히 이대로 사용)
 ${CRITERIA.map((c) => `- ${c.criterion} (가중치 ${c.weight})${c.hint ? `: ${c.hint}` : ""}`).join("\n")}
 
 이미지를 관찰하고 기준별로 채점해 JSON으로 출력하라.`,
       images,
-      schema: EVAL_SCHEMA,
+      schema: makeEvalSchema(CRITERIA.map((c) => c.criterion)),
       effort: "medium",
     });
   } catch (e) {

@@ -100,14 +100,20 @@ async function openaiFallback(opts: ClaudeCallOpts): Promise<string> {
 }
 
 export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
-  const content: Anthropic.ContentBlockParam[] = [
-    ...(opts.images ?? []).map((img): Anthropic.ContentBlockParam => {
-      // 문자열 입력은 실제 바이트를 스니핑해 미디어 타입 판별 (PNG 가정 금지)
-      const o = typeof img === "string" ? { data: img, media_type: sniffBase64(img) } : img;
-      return { type: "image", source: { type: "base64", media_type: o.media_type, data: o.data } };
-    }),
-    { type: "text", text: opts.prompt },
-  ];
+  const imageBlocks = (opts.images ?? []).map((img): Anthropic.ContentBlockParam => {
+    // 문자열 입력은 실제 바이트를 스니핑해 미디어 타입 판별 (PNG 가정 금지)
+    const o = typeof img === "string" ? { data: img, media_type: sniffBase64(img) } : img;
+    return { type: "image", source: { type: "base64", media_type: o.media_type, data: o.data } };
+  });
+  // 프롬프트 캐싱: 이미지들(레퍼런스·애셋 등)은 같은 파이프라인에서 반복 입력되므로
+  // 마지막 이미지에 캐시 브레이크포인트를 걸어 앞부분 전체를 캐시한다 (5분 TTL)
+  if (imageBlocks.length) {
+    imageBlocks[imageBlocks.length - 1] = {
+      ...imageBlocks[imageBlocks.length - 1],
+      cache_control: { type: "ephemeral" },
+    } as Anthropic.ContentBlockParam;
+  }
+  const content: Anthropic.ContentBlockParam[] = [...imageBlocks, { type: "text", text: opts.prompt }];
 
   let message: Anthropic.Message;
   try {
@@ -116,7 +122,8 @@ export async function claudeCall(opts: ClaudeCallOpts): Promise<string> {
       model: CLAUDE_MODEL,
       max_tokens: opts.maxTokens ?? 16000,
       thinking: { type: "adaptive" },
-      system: opts.system,
+      // 시스템 프롬프트는 호출 유형별로 고정 — 캐시로 재과금 방지
+      system: [{ type: "text" as const, text: opts.system, cache_control: { type: "ephemeral" as const } }],
       messages: [{ role: "user", content }],
       output_config: {
         effort: opts.effort ?? "high",
@@ -203,8 +210,12 @@ export function availableEngines(): ImageEngine[] {
   return engines;
 }
 
-/** 이미지 생성. inputImage(PNG Buffer)를 주면 그 이미지를 기반으로 편집·합성한다 (목업 등) */
-export async function generateImage(engine: ImageEngine, prompt: string, inputImage?: Buffer): Promise<Buffer> {
+/** 이미지 생성 (실사용 모델 반환) — Gemini pro→flash 폴백 여부를 추적할 수 있다 */
+export async function generateImageEx(
+  engine: ImageEngine,
+  prompt: string,
+  inputImage?: Buffer
+): Promise<{ buf: Buffer; model: string }> {
   if (engine === "openai") {
     if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY가 설정되지 않았습니다.");
     const client = new OpenAI();
@@ -225,7 +236,7 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
           });
       const b64 = res.data?.[0]?.b64_json;
       if (!b64) throw new Error("OpenAI 이미지 생성 결과가 비어 있습니다.");
-      return Buffer.from(b64, "base64");
+      return { buf: Buffer.from(b64, "base64"), model: "gpt-image-1" };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`OpenAI 이미지 생성 실패: ${msg.slice(0, 200)}`);
@@ -249,7 +260,7 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
           : prompt,
       });
       for (const part of res.candidates?.[0]?.content?.parts ?? []) {
-        if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+        if (part.inlineData?.data) return { buf: Buffer.from(part.inlineData.data, "base64"), model };
       }
       throw new Error("결과가 비어 있습니다 (정책 거부일 수 있음).");
     } catch (e) {
@@ -258,4 +269,9 @@ export async function generateImage(engine: ImageEngine, prompt: string, inputIm
   }
   const msg = lastError instanceof Error ? lastError.message : String(lastError);
   throw new Error(`Gemini 이미지 생성 실패: ${msg.slice(0, 200)}`);
+}
+
+/** 이미지 생성 (Buffer만 필요할 때의 간이 래퍼) */
+export async function generateImage(engine: ImageEngine, prompt: string, inputImage?: Buffer): Promise<Buffer> {
+  return (await generateImageEx(engine, prompt, inputImage)).buf;
 }

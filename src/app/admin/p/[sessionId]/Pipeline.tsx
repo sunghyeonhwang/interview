@@ -39,6 +39,7 @@ interface Concept {
   id: string;
   direction: string;
   engine: string;
+  gen_model: string | null;
   round: number;
   version: number;
   prompt: string;
@@ -886,7 +887,10 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                         ⭐
                       </button>
                       <span className="badge badge-pending">{c.direction}</span>
-                      <span className="badge badge-pending">{c.round}회차 · {engineLabel(c.engine)} #{c.version}</span>
+                      <span className="badge badge-pending" title={c.gen_model ?? undefined}>{c.round}회차 · {engineLabel(c.engine)} #{c.version}</span>
+                      {c.engine === "gemini" && c.gen_model?.includes("2.5-flash") && (
+                        <span className="badge badge-progress" title={`상위 모델 실패로 하위 모델로 생성됨 (${c.gen_model})`}>⚠ flash</span>
+                      )}
                       {latestEval(c.id) && <span className="badge badge-done">{latestEval(c.id)!.total}점</span>}
                       {(c.palette ?? []).map((hex) => (
                         <span key={hex} title={hex} className="inline-block h-5 w-5 rounded-full border border-line" style={{ background: hex }} />

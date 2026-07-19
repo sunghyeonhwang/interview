@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { isAdmin } from "@/lib/adminSession";
 import { ownerFilter } from "@/lib/pipeline";
-import { claudeCall, extractJSON, generateImage, sniffMediaType, type ImageEngine, type VisionImage } from "@/lib/ai";
+import { claudeCall, extractJSON, generateImageEx, sniffMediaType, type ImageEngine, type VisionImage } from "@/lib/ai";
 
 export const maxDuration = 300;
 
@@ -296,7 +296,16 @@ ${priorPrompts.length ? `\n## 이번 회차에 이미 시도한 접근 (이것�
   // 2) 라이트 생성 → 텍스트 검사 → (셀프 리파인) → 확정된 라이트에서 다크 파생
   const lightSuffix = `\n\nPresented on a clean white background, light mode version. Professional brand identity presentation, high quality, centered composition.`;
   const darkSuffix = `\n\nPresented on a very dark charcoal background (#0a0c02), dark mode version with adjusted colors for dark background legibility. Professional brand identity presentation, high quality, centered composition.`;
-  let light = await generateImage(engine, `${composed.image_prompt}${lightSuffix}`);
+
+  // 실사용 모델 추적 (Gemini pro→flash 폴백 여부 기록)
+  const modelsUsed = new Set<string>();
+  const genImg = async (p: string, input?: Buffer) => {
+    const r = await generateImageEx(engine, p, input);
+    modelsUsed.add(r.model);
+    return r.buf;
+  };
+
+  let light = await genImg(`${composed.image_prompt}${lightSuffix}`);
 
   // 2.2) 브랜드명·텍스트 오탈자 검사 (저비용) — 문제가 보이면 1회 재생성
   if (!prompt_override) {
@@ -313,8 +322,7 @@ ${priorPrompts.length ? `\n## 이번 회차에 이미 시도한 접근 (이것�
         })
       );
       if (!check.ok) {
-        light = await generateImage(
-          engine,
+        light = await genImg(
           `${composed.image_prompt}${lightSuffix}\n\nCRITICAL: Render all text with EXACT correct spelling and clean letterforms. No gibberish or broken glyphs. Previously observed problem text: "${(check.found ?? "").slice(0, 80)}".`
         );
       }
@@ -352,7 +360,7 @@ ${composed.image_prompt}
       if (critique.verdict === "improve" && critique.image_prompt?.trim()) {
         composed.image_prompt = critique.image_prompt.trim();
         composed.rationale = `${composed.rationale ?? ""}\n\n[셀프 리파인] ${critique.critique}`;
-        light = await generateImage(engine, `${composed.image_prompt}${lightSuffix}`);
+        light = await genImg(`${composed.image_prompt}${lightSuffix}`);
       }
     } catch {
       /* 리파인 실패 시 1차 결과 그대로 사용 */
@@ -362,14 +370,13 @@ ${composed.image_prompt}
   // 2.9) 다크는 확정된 라이트 이미지에서 파생 — 두 버전의 조형 일관성 보장
   let dark: Buffer;
   try {
-    dark = await generateImage(
-      engine,
+    dark = await genImg(
       `Convert this exact logo design to a dark mode version: place it on a very dark charcoal background (#0a0c02), adjusting colors only as needed for legibility on dark. Keep the logo's shape, composition and proportions IDENTICAL to the input. Professional brand identity presentation, centered composition.`,
       light
     );
   } catch {
     // 파생 실패 시 기존 방식(독립 생성)으로 폴백
-    dark = await generateImage(engine, `${composed.image_prompt}${darkSuffix}`);
+    dark = await genImg(`${composed.image_prompt}${darkSuffix}`);
   }
 
   // 3) Storage 업로드
@@ -403,6 +410,7 @@ ${composed.image_prompt}
       brief_id: brief.id,
       direction,
       engine,
+      gen_model: [...modelsUsed].join("+") || null,
       round,
       version,
       prompt: composed.image_prompt,
