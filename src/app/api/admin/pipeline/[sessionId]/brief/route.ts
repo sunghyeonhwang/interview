@@ -100,6 +100,8 @@ export async function POST(_req: NextRequest, { params }: Params) {
 - 모든 판단은 인터뷰 답변에 근거해야 하며, 답변에 없는 사실을 지어내지 않는다.
 - "과거 재시작 기각 사유"가 있으면 그 문제를 해소하는 방향으로 만들고, anti에도 반영한다.
 - directions는 서로 전략적으로 뚜렷이 구분되는 2~3개 방향으로 만든다 (표면적 변형 금지).
+  각 방향은 서로 다른 조형 축(모티프 계열 × 구성 방식 × 무드)을 대표해야 하고, name은 결과물이 그려지도록 구체적으로,
+  concept에는 대표 모티프 후보 1~2개와 조형 언어(기하/유기, 선/면, 대칭/비대칭 등)를 포함한다.
 - search_queries는 각 방향당 2~3개. 실제 브랜드/로고 벤치마크 사례를 찾는 쿼리로:
   디자인 어워드("good design award", "red dot", "iF design"), 큐레이션 매체(site:behance.net, site:bpando.org, site:underconsideration.com) 활용을 우선하고,
   업종·지역·스타일 키워드를 조합한다. Pinterest는 절대 포함하지 않는다.
@@ -157,6 +159,7 @@ async function projectBrief(client: ReturnType<typeof db>, project: DesignProjec
 - positioning에는 이 프로젝트의 목표(어떤 산출물이 왜 필요한지)를 요약한다.
 - directions는 원본 아이덴티티(형태 언어·키컬러)를 유지하면서도 서로 뚜렷이 다른 응용 방향 2~3개로 만든다.
   (예: 심볼 단순화/모노그램화, 그래픽 모티프 확장, 엠블럼·배지 응용 등 — 프로젝트 목표에 맞게)
+  각 방향의 concept에는 첨부된 원본 로고에서 관찰한 구체적 조형 요소(어떤 형태·선·비례를 가져와 어떻게 응용할지)를 명시한다.
 - anti에는 "원본 아이덴티티를 훼손하는 것"(키컬러 무시, 형태 언어 이탈 등)을 반드시 포함한다.
 - search_queries는 각 방향당 2~3개. 유사한 브랜드 리프레시/베리에이션/서브브랜드 사례를 찾는 쿼리로,
   디자인 어워드·큐레이션 매체(site:behance.net, site:bpando.org)를 활용한다. Pinterest는 절대 포함하지 않는다.`,
