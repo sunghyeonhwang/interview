@@ -96,6 +96,12 @@ const brandLogoRenewal: QuestionnaireTemplate = {
       guide: "지금 로고를 어떻게 느끼시는지 솔직하게 적어주세요. 정답은 없습니다.",
       questions: [
         {
+          type: "image",
+          prompt: "현재 로고 파일을 올려주세요",
+          guide: "PNG·JPG·WebP, 5MB 이하. 원본이 없으면 명함 사진이나 화면 캡처도 좋습니다.",
+          required: true,
+        },
+        {
           type: "text",
           prompt: "현재 로고는 언제, 어떤 과정으로 만들어졌나요?",
           guide: "만든 주체(내부·외주·직접)와 당시 의도도 함께 적어주세요.",

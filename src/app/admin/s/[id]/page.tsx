@@ -16,6 +16,19 @@ function renderValue(q: Question, value: unknown) {
   if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
     return <span className="text-fg2/30">무응답</span>;
   }
+  if (q.type === "image" && typeof value === "string") {
+    const src = `/api/admin/uploads/img?path=${encodeURIComponent(value)}`;
+    return (
+      <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={src}
+          alt="응답자가 업로드한 이미지"
+          className="max-h-64 w-auto rounded-(--radius-xs) border border-line bg-base/40 object-contain"
+        />
+      </a>
+    );
+  }
   if (q.type === "multi" && Array.isArray(value)) {
     return (
       <ul className="list-disc pl-5">

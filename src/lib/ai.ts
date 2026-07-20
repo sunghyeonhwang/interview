@@ -28,6 +28,19 @@ export function sniffMediaType(buf: Buffer): VisionImage["media_type"] {
 const sniffBase64 = (b64: string): VisionImage["media_type"] =>
   sniffMediaType(Buffer.from(b64.slice(0, 24), "base64"));
 
+/**
+ * 사용자 업로드 이미지 검증: 비전이 지원하는 래스터 포맷(PNG/JPG/WebP)만 매직 바이트로 허용한다.
+ * Content-Type은 신뢰하지 않으며, SVG·GIF 등 그 외 포맷은 null을 반환해 라우트에서 거부한다.
+ * (sniffMediaType은 미상 포맷을 PNG로 가정해 업로드 게이트에는 부적합 → 별도 화이트리스트 판별)
+ */
+export function sniffUploadImage(buf: Buffer): { media_type: "image/png" | "image/jpeg" | "image/webp"; ext: "png" | "jpg" | "webp" } | null {
+  if (buf[0] === 0xff && buf[1] === 0xd8) return { media_type: "image/jpeg", ext: "jpg" };
+  if (buf[0] === 0x89 && buf[1] === 0x50) return { media_type: "image/png", ext: "png" };
+  if (buf.subarray(0, 4).toString("latin1") === "RIFF" && buf.subarray(8, 12).toString("latin1") === "WEBP")
+    return { media_type: "image/webp", ext: "webp" };
+  return null;
+}
+
 interface ClaudeCallOpts {
   system: string;
   prompt: string;

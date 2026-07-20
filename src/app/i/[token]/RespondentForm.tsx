@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
 import type { Question, ScaleOptions, AnswerMap, AnswerValue } from "@/lib/types";
@@ -17,6 +17,7 @@ interface Payload {
   respondent_email?: string;
   status: string;
   answers: AnswerMap;
+  previews?: Record<string, string>;
 }
 
 function isEmpty(v: AnswerValue | undefined) {
@@ -27,6 +28,7 @@ export default function RespondentForm({ token }: { token: string }) {
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState("");
   const [answers, setAnswers] = useState<AnswerMap>({});
+  const [previews, setPreviews] = useState<Record<string, string>>({});
   const [started, setStarted] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [step, setStep] = useState(0); // 현재 섹션 인덱스
@@ -49,6 +51,7 @@ export default function RespondentForm({ token }: { token: string }) {
       .then((d: Payload) => {
         setData(d);
         setAnswers(d.answers ?? {});
+        setPreviews(d.previews ?? {});
         setEmail(d.respondent_email ?? "");
         if (d.status === "submitted") setSubmitted(true);
         else if (d.status === "in_progress") {
@@ -102,6 +105,22 @@ export default function RespondentForm({ token }: { token: string }) {
     setAnswers((prev) => ({ ...prev, [qid]: value }));
     dirtyRef.current.add(qid);
     setSaveState("dirty");
+  }
+
+  // 이미지 업로드: 업로드 라우트가 답변(value=경로)까지 저장하므로 임시저장 dirty로 표시하지 않는다.
+  async function uploadImage(qid: string, file: File): Promise<string | null> {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("questionId", qid);
+    const res = await fetch(`/api/i/${token}/upload`, { method: "POST", body: fd });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error ?? "업로드에 실패했습니다.");
+    }
+    const { path, url } = await res.json();
+    setAnswers((prev) => ({ ...prev, [qid]: path }));
+    if (url) setPreviews((prev) => ({ ...prev, [qid]: url }));
+    return url ?? null;
   }
 
   function goTo(next: number) {
@@ -309,7 +328,14 @@ export default function RespondentForm({ token }: { token: string }) {
           {current.guide && <p className="mt-2 text-sm leading-relaxed text-fg2">{current.guide}</p>}
           <div className="mt-6 space-y-8">
             {current.questions.map((q) => (
-              <QuestionField key={q.id} q={q} value={answers[q.id]} onChange={(v) => setAnswer(q.id, v)} />
+              <QuestionField
+                key={q.id}
+                q={q}
+                value={answers[q.id]}
+                onChange={(v) => setAnswer(q.id, v)}
+                previewUrl={previews[q.id]}
+                onUpload={(file) => uploadImage(q.id, file)}
+              />
             ))}
           </div>
         </section>
@@ -344,12 +370,35 @@ function QuestionField({
   q,
   value,
   onChange,
+  previewUrl,
+  onUpload,
 }: {
   q: Question;
   value: AnswerValue | undefined;
   onChange: (v: AnswerValue) => void;
+  previewUrl?: string;
+  onUpload: (file: File) => Promise<string | null>;
 }) {
   const scale = q.type === "scale" ? ((q.options ?? { min: 1, max: 5 }) as ScaleOptions) : null;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+
+  async function handleFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // 같은 파일 재선택 허용
+    if (!file) return;
+    setUploadError("");
+    setUploading(true);
+    try {
+      await onUpload(file);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "업로드에 실패했습니다.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div>
       <p className="text-base font-bold leading-relaxed text-fg">
@@ -429,6 +478,46 @@ function QuestionField({
               <span className="text-right">{scale.maxLabel}</span>
             </div>
           )}
+        </div>
+      )}
+      {q.type === "image" && (
+        <div className="mt-3">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={handleFile}
+            className="hidden"
+            aria-label={q.prompt}
+          />
+          {previewUrl ? (
+            <div className="space-y-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={previewUrl}
+                alt="업로드한 이미지 미리보기"
+                className="max-h-56 w-auto rounded-(--radius-xs) border border-line bg-base/40 object-contain"
+              />
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="btn btn-ghost"
+              >
+                {uploading ? "업로드 중…" : "다른 파일로 교체"}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+              className="btn btn-ghost"
+            >
+              {uploading ? "업로드 중…" : "파일 선택"}
+            </button>
+          )}
+          {uploadError && <p role="alert" className="mt-2 text-xs text-danger">{uploadError}</p>}
         </div>
       )}
     </div>

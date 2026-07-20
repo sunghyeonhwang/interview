@@ -12,11 +12,16 @@ type Params = { params: Promise<{ sessionId: string }> };
 const BRIEF_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["positioning", "keywords", "anti", "directions"],
+  required: ["positioning", "keywords", "anti", "directions", "current_logo_analysis"],
   properties: {
     positioning: { type: "string", description: "핵심 포지셔닝 서술 (한국어, 2~3문장)" },
     keywords: { type: "array", items: { type: "string" }, description: "무드/가치 키워드" },
     anti: { type: "array", items: { type: "string" }, description: "피해야 할 방향·인상" },
+    current_logo_analysis: {
+      type: "string",
+      description:
+        "첨부된 현재 로고 이미지 분석 (형태·색·서체 인상, 강점, 개선 여지). 첨부 이미지가 없으면 빈 문자열.",
+    },
     directions: {
       type: "array",
       items: {
@@ -73,11 +78,25 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
   const qTitle = (session.iv_questionnaires as unknown as { title: string } | null)?.title ?? "";
   const lines: string[] = [`# 인터뷰: ${qTitle} — ${session.respondent_name}`];
+  // 응답자가 올린 현재 로고 이미지를 비전 입력으로 첨부한다. 다운로드 실패는 조용히 스킵(브리프 생성은 진행).
+  const images: string[] = [];
   for (const s of sections ?? []) {
     lines.push(`\n## ${s.title}`);
     for (const q of ((s.iv_questions ?? []) as Question[]).sort((a, b) => a.order - b.order)) {
       const v = answerMap.get(q.id);
       if (v == null || v === "") continue;
+      if (q.type === "image" && typeof v === "string") {
+        try {
+          const { data: file } = await client.storage.from("iv-uploads").download(v);
+          if (file) {
+            images.push(Buffer.from(await file.arrayBuffer()).toString("base64"));
+            lines.push(`- Q: ${q.prompt}\n  A: (첨부된 현재 로고 이미지 참조 — 아래 지시에 따라 분석)`);
+          }
+        } catch {
+          /* 이미지 다운로드 실패는 격리 — 텍스트 답변만으로 계속 진행 */
+        }
+        continue;
+      }
       lines.push(`- Q: ${q.prompt}\n  A: ${Array.isArray(v) ? v.join(", ") : String(v)}`);
     }
   }
@@ -105,8 +124,12 @@ export async function POST(_req: NextRequest, { params }: Params) {
 - search_queries는 각 방향당 2~3개. 실제 브랜드/로고 벤치마크 사례를 찾는 쿼리로:
   디자인 어워드("good design award", "red dot", "iF design"), 큐레이션 매체(site:behance.net, site:bpando.org, site:underconsideration.com) 활용을 우선하고,
   업종·지역·스타일 키워드를 조합한다. Pinterest는 절대 포함하지 않는다.
-- anti에는 인터뷰의 안티 레퍼런스 답변을 반드시 반영한다.`,
+- anti에는 인터뷰의 안티 레퍼런스 답변을 반드시 반영한다.
+- 첨부된 현재 로고 이미지가 있으면 이를 분석해 current_logo_analysis에 '현재 로고 분석'을 작성한다 —
+  형태·색·서체 인상, 강점, 개선 여지를 근거와 함께. 첨부 이미지가 없으면 current_logo_analysis는 빈 문자열("")로 둔다.
+  (후속 컨셉 생성 단계로의 이미지 전달은 이번 범위 밖 — 분석은 브리프에만 반영한다.)`,
     prompt: `다음 인터뷰를 분석해 브리프를 JSON으로 작성하라.${resetSection}\n\n${lines.join("\n")}`,
+    images,
     schema: BRIEF_SCHEMA,
     effort: "medium",
   });
@@ -162,7 +185,8 @@ async function projectBrief(client: ReturnType<typeof db>, project: DesignProjec
   각 방향의 concept에는 첨부된 원본 로고에서 관찰한 구체적 조형 요소(어떤 형태·선·비례를 가져와 어떻게 응용할지)를 명시한다.
 - anti에는 "원본 아이덴티티를 훼손하는 것"(키컬러 무시, 형태 언어 이탈 등)을 반드시 포함한다.
 - search_queries는 각 방향당 2~3개. 유사한 브랜드 리프레시/베리에이션/서브브랜드 사례를 찾는 쿼리로,
-  디자인 어워드·큐레이션 매체(site:behance.net, site:bpando.org)를 활용한다. Pinterest는 절대 포함하지 않는다.`,
+  디자인 어워드·큐레이션 매체(site:behance.net, site:bpando.org)를 활용한다. Pinterest는 절대 포함하지 않는다.
+- current_logo_analysis: 첨부된 원본 로고 애셋을 분석해 형태·색·서체 인상과 강점·응용 여지를 서술한다. 첨부가 없으면 빈 문자열("").`,
     prompt: `## 프로젝트
 - 프로젝트명: ${project.title}
 - 브랜드명: ${project.brand_name}

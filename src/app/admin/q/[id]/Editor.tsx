@@ -25,6 +25,7 @@ const TYPE_LABEL: Record<QuestionType, string> = {
   single: "단일 선택",
   multi: "복수 선택",
   scale: "척도",
+  image: "이미지 업로드",
 };
 
 function defaultOptions(type: QuestionType): EQuestion["options"] {

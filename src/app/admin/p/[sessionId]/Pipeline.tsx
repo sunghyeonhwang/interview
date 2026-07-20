@@ -17,7 +17,7 @@ const originBadge = (o?: string) =>
   o === "seed" ? <span className="badge badge-pending">💡 아이디어</span> : null;
 interface Brief {
   id: string;
-  content: { positioning: string; keywords: string[]; anti: string[]; directions: Direction[] };
+  content: { positioning: string; keywords: string[]; anti: string[]; directions: Direction[]; current_logo_analysis?: string };
   status: string;
   current_round: number;
   round_feedback: { round: number; feedback: string }[];
@@ -470,6 +470,12 @@ export default function Pipeline({ sessionId }: { sessionId: string }) {
                   ))}
                 </div>
               </div>
+              {brief.content.current_logo_analysis?.trim() && (
+                <div className="card">
+                  <h2 className="text-xl text-fg">현재 로고 분석</h2>
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg2">{brief.content.current_logo_analysis}</p>
+                </div>
+              )}
               {directions.map((d) => (
                 <div key={d.name} className="card">
                   <h2 className="flex items-center gap-2 text-xl text-fg">{d.name} {originBadge(d.origin)}</h2>
@@ -1666,6 +1672,8 @@ function BriefEditor({
               positioning: positioning.trim(),
               keywords: split(keywords),
               anti: split(anti),
+              // 수정 UI에 없는 로고 분석은 그대로 보존
+              ...(initial.current_logo_analysis ? { current_logo_analysis: initial.current_logo_analysis } : {}),
               directions: dirs
                 .filter((d) => d.name.trim())
                 .map((d) => ({

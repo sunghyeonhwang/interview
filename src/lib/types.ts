@@ -1,4 +1,4 @@
-export type QuestionType = "text" | "short" | "single" | "multi" | "scale";
+export type QuestionType = "text" | "short" | "single" | "multi" | "scale" | "image";
 
 export interface Question {
   id: string;
@@ -45,6 +45,7 @@ export interface Session {
   created_at: string;
 }
 
-// 답변 값: text/short → string, single → string, multi → string[], scale → number
+// 답변 값: text/short → string, single → string, multi → string[], scale → number,
+// image → string(스토리지 경로. iv-uploads 버킷 기준 상대 경로)
 export type AnswerValue = string | string[] | number;
 export type AnswerMap = Record<string, AnswerValue>;

@@ -50,12 +50,27 @@ export async function GET(_req: NextRequest, { params }: Params) {
       questions: (s.iv_questions ?? []).sort((a, b) => a.order - b.order),
     }));
 
+  const answerMap = Object.fromEntries((answers ?? []).map((a) => [a.question_id, a.value]));
+
+  // image 유형 답변은 저장된 경로에 대한 미리보기용 서명 URL을 동봉한다(재방문 시 썸네일 복원).
+  const imageQuestionIds = new Set(
+    sections.flatMap((s) => s.questions).filter((qq) => qq.type === "image").map((qq) => qq.id)
+  );
+  const previews: Record<string, string> = {};
+  for (const [qid, value] of Object.entries(answerMap)) {
+    if (imageQuestionIds.has(qid) && typeof value === "string" && value) {
+      const { data: signed } = await client.storage.from("iv-uploads").createSignedUrl(value, 3600);
+      if (signed?.signedUrl) previews[qid] = signed.signedUrl;
+    }
+  }
+
   return NextResponse.json({
     questionnaire: { title: q.title, description: q.description, sections },
     respondent_name: session.respondent_name,
     respondent_email: session.respondent_email ?? "",
     status: session.status,
-    answers: Object.fromEntries((answers ?? []).map((a) => [a.question_id, a.value])),
+    answers: answerMap,
+    previews,
   });
 }
 
