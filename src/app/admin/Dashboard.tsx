@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { TEMPLATES } from "@/lib/templates";
 
 interface QRow {
   id: string;
@@ -33,6 +34,8 @@ export default function Dashboard() {
   const [newTitle, setNewTitle] = useState("");
   const [sessionForm, setSessionForm] = useState({ questionnaire_id: "", respondent_name: "" });
   const [copied, setCopied] = useState<string | null>(null);
+  const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
+  const [templateError, setTemplateError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [qRes, sRes] = await Promise.all([
@@ -58,6 +61,30 @@ export default function Dashboard() {
     if (res.ok) {
       setNewTitle("");
       load();
+    }
+  }
+
+  async function createFromTemplate(key: string) {
+    setTemplateError(null);
+    setCreatingTemplate(key);
+    try {
+      const res = await fetch("/api/admin/questionnaires/from-template", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templateKey: key }),
+      });
+      if (res.ok) {
+        const { questionnaire } = await res.json();
+        // 생성 직후 바로 편집 화면으로 이동
+        window.location.href = `/admin/q/${questionnaire.id}`;
+      } else {
+        const { error } = await res.json().catch(() => ({ error: null }));
+        setTemplateError(error ?? "템플릿으로 만들기에 실패했습니다.");
+        setCreatingTemplate(null);
+      }
+    } catch {
+      setTemplateError("네트워크 오류로 만들지 못했습니다.");
+      setCreatingTemplate(null);
     }
   }
 
@@ -135,6 +162,25 @@ export default function Dashboard() {
             질문지 만들기
           </button>
         </div>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
+          <span className="text-[13px] text-fg2">템플릿에서 만들기</span>
+          {TEMPLATES.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => createFromTemplate(t.key)}
+              disabled={creatingTemplate !== null}
+              title={t.description}
+              className="btn btn-ghost shrink-0"
+            >
+              {creatingTemplate === t.key ? "만드는 중…" : t.title}
+            </button>
+          ))}
+        </div>
+        {templateError && (
+          <p className="mt-2 text-[13px] text-danger" role="alert">
+            {templateError}
+          </p>
+        )}
         <ul className="card mt-4 divide-y divide-line !p-0">
           {loaded && questionnaires.length === 0 && (
             <li className="px-5 py-10 text-center text-sm text-fg2">
